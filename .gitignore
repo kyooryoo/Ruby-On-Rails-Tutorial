@@ -21,3 +21,9 @@
 /yarn-error.log
 
 .byebug_history
+
+# Ignore Heroku
+/heroku
+
+# Ignore Spring files
+/spring/*.pid
