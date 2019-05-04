@@ -20,6 +20,13 @@ test:
   <<: *default
   database: db/test.sqlite3
 
+# The default DB configuration seems not right
+#production:
+#  <<: *default
+#  database: db/production.sqlite3
+
 production:
   <<: *default
-  database: db/production.sqlite3
+  database: sample_app_production
+  username: sample_app
+  password: <%= ENV['SAMPLE_APP_DATABASE_PASSWORD'] %>
