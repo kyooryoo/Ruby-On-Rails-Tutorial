@@ -21,3 +21,7 @@ $ rails server
 
 For more information, see the
 [*Ruby on Rails Tutorial* book](https://www.railstutorial.org/book).
+
+## 第十章 更新、列印和删除用户
+
+之前的部分以后再做追加，现在先从本章节开始完成剩余部分。
