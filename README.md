@@ -22,6 +22,8 @@ $ rails server
 For more information, see the
 [*Ruby on Rails Tutorial* book](https://www.railstutorial.org/book).
 
+## 第十章 更新、列印和删除用户
+
 本节完成用户资源的其他REST动作，添加包括编辑、更新、列印和删除操作。首先，添加允许用户修改自身简介的功能，同时强制对该操作开启认证授权。之后，添加列印用户的功能，涉及到抽样数据和分页，同样需要强制授权。最后，添加删除用户的功能，通过建立一个高权限的管理员用户类来执行。
 
 ## 切换到本地开发环境
