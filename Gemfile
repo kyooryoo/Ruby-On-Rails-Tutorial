@@ -36,6 +36,7 @@ group :test do
 end
 
 group :production do
+  gem 'ruby', '2.5.3'
   gem 'pg', '0.20.0'
 end
 
