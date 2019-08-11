@@ -1,17 +1,13 @@
-# Ruby on Rails Tutorial - sample app
+# Ruby on Rails 教程 - 样例程序
 
-This is the sample application for
-[*Ruby on Rails Tutorial*](https://www.railstutorial.org/)
+该样例程序来自
+[*Ruby on Rails 教程*](https://www.railstutorial.org/)
 
-## License
+## 授权
+MIT 和 Beerware License.
 
-All source code is available jointly under the MIT and the Beerware License.
-
-## Getting started
-
-To get started with the app, clone the repo, then:
-install the gems, migrate the database, run the test, and run the app:
-
+## 开始
+克隆代码库，安装GEM库，迁移数据库，测试，运行程序
 ```
 $ bundle install --without production
 $ rails db:migrate
@@ -19,8 +15,11 @@ $ rails test
 $ rails server
 ```
 
-For more information, see the
-[*Ruby on Rails Tutorial* book](https://www.railstutorial.org/book).
+详情
+[*Ruby on Rails Tutorial* 原书](https://www.railstutorial.org/book).
+
+## 之前的部分我会慢慢补上，有时间也会为各章节分别建立文件夹
+## 现在暂时从第十章开始，总共十四个章节
 
 ## 第十章 更新、列印和删除用户
 
@@ -1821,3 +1820,518 @@ $ heroku git:remote -a <your_heroku_app_name>
 ### 测试生产
 
 部署生成后再次测试，使用实际有效的邮箱，应该可以收到激活邮件，点击激活连接后跳转到用户简介页面，可以得到账户激活成功提示。我的环境里测试完成了，祝你好运。
+
+## 第十二章 重置密码
+
+重置密码涉及修改一个视图和两个表单，处理邮箱和新密码的提交。需要在登录页面添加一个`forgot password`链接，该链接指向一个邮箱地址输入表单，密码重置链接将会通过邮件发送到该邮件地址。还要为密码重置添加新的资源和数据模型，配合`mailer`操作。大致的步骤如下：
+1. 当用户请求密码重置，通过邮箱地址找到目标用户
+2. 如果邮箱地址可以从数据库中找到，生成重置令牌和相应的摘要
+3. 保存重置摘要到数据库，发送包含重置令牌和用户邮箱地址的链接给用户
+4. 当用户点击该链接，通过邮箱找到用户，通过比较重置摘要认证用户
+5. 如果认证通过，跳转到密码重置页面以便用户更新密码
+
+### 密码重置资源
+
+虽然与`Active Record`模型没有直接关系，我们仍将密码重置作为资源建模，包括重置令牌在内的相关数据将包含在用户模型中。在Rails程序中，用户与资源的交互方式总是标准REST类型的URL，这里需要`new`，`create`，`edit`和`update`四个REST类型的URL。
+
+为本节创建独立的代码分支，为密码重置资源创建控制器，同时创建`new`和`edit`动作：
+```
+$ git checkout -b password-reset
+$ rails generate controller PasswordResets new edit --no-test-framework
+```
+注意以上语句中使用`--no-test-framework`参数指明生成的控制器不包含测试模块，因为我们不需要对该控制器做测试，相关的测试将通过更新前一章节的集成测试完成。下面更新路径设置文件：
+`config/routes.rb`
+```
+Rails.application.routes.draw do
+  ...
+  # 追加如下一条路由设置
+  resources :password_resets,     only: [:new, :create, :edit, :update]
+end
+```
+以上路由设置产生的URL详情如下：
+HTTP request | URL | Action | Named route
+GET | /password_resets/new | new | new_password_reset_path
+POST | /password_resets | create | password_resets_path
+GET | http://ex.co/password_resets/<token>/edit | edit | edit_password_reset_url(token)
+PATCH | /password_resets/<token> | update | password_reset_path(token)
+
+更新登录页面视图，添加一个重置密码的链接：
+`app/views/sessions/new.html.erb`
+```
+<div class="row">
+  <div class="col-md-6 col-md-offset-3">
+    <%= form_for(:session, url: login_path) do |f| %>
+      ...
+      <%= f.label :password %>
+      # 添加如下一条语句
+      <%= link_to "(forgot password)", new_password_reset_path %>
+      <%= f.password_field :password, class: 'form-control' %>
+      ...
+    <% end %>
+    <p>New user? <%= link_to "Sign up now!", signup_path %></p>
+  </div>
+</div>
+```
+
+#### 密码重置`new`动作
+
+与验证密码和用户激活令牌类似，基于安全上的考量，密码重置请求的验证也涉及一对令牌和摘要。否则，恶意用户可以通过访问数据库获取明文保存的密码重置令牌，进而重置用户密码和控制用户账户。为了给密码重置令牌增加过期时间设置，额外需要增加一个密码重置请求的时间戳。用户模型需要添加如下两个属性：
+* reset_digest: string
+* reset_sent_at: datetime
+
+为增加以上两个属性，运行如下命令：
+```
+$ rails generate migration add_reset_to_users reset_digest:string \
+> reset_sent_at:datetime
+$ rails db:migrate
+```
+注意，以上命令中第二行的`>`是命令行跨行继续的标志，由终端自动加入不需要手动输入。如果拷贝命令到终端，留意`>`标志没有重复出现，否则运行不会报错但第二个属性`reset_sent_at`不会添加成功。
+
+更新密码重置的`new`视图文件：
+`app/views/password_resets/new.html.erb`
+```
+<% provide(:title, "Forgot password") %>
+<h1>Forgot password</h1>
+<div class="row">
+  <div class="col-md-6 col-md-offset-3">
+    <%= form_for(:password_reset, url: password_resets_path) do |f| %>
+      <%= f.label :email %>
+      <%= f.email_field :email, class: 'form-control' %>
+      <%= f.submit "Submit", class: "btn btn-primary" %>
+    <% end %>
+  </div>
+</div>
+```
+
+#### 密码重置`create`动作
+
+在`new`页面中提交邮箱地址后，需要根据提交的邮箱地址找到用户，使用密码重置令牌和时间戳更新用户属性，然后跳转到网站根页面，显示一条通知闪信。在提交信息无效的情况下，重新生成密码重置的`new`页面，更新密码重置控制器：
+`app/controllers/password_resets_controller.rb`
+```
+  # 添加如下动作定义
+  def create
+    @user = User.find_by(email: params[:password_reset][:email].downcase)
+    if @user
+      @user.create_reset_digest
+      @user.send_password_reset_email
+      flash[:info] = "Email sent with password reset instructions"
+      redirect_to root_url
+    else
+      flash.now[:danger] = "Email address not found"
+      render 'new'
+    end
+  end
+```
+
+更新用户模型定义文件：
+`app/models/user.rb`
+```
+class User < ApplicationRecord
+  # 更新如下一条代码
+  attr_accessor :remember_token, :activation_token, :reset_token
+  ...
+
+  # 设定密码重置属性
+  def create_reset_digest
+    self.reset_token = User.new_token
+    update_attribute(:reset_digest,  User.digest(reset_token))
+    update_attribute(:reset_sent_at, Time.zone.now)
+  end
+
+  # 发送密码重置邮件
+  def send_password_reset_email
+    UserMailer.password_reset(self).deliver_now
+  end
+
+  private
+    ...
+end
+```
+
+### 密码重置邮件
+
+由于前一章节已经生成了部分文件，这里更新即可：
+`app/mailers/user_mailer.rb`
+```
+class UserMailer < ApplicationMailer
+  ...
+  # 更新如下方法
+  def password_reset(user)
+    @user = user
+    mail to: user.email, subject: "Password reset"
+  end
+end
+```
+
+更新密码重置的纯文本邮件模版：
+`app/views/user_mailer/password_reset.text.erb`
+```
+To reset your password click the link below:
+<%= edit_password_reset_url(@user.reset_token, email: @user.email) %>
+This link will expire in two hours.
+If you did not request your password to be reset, please ignore this email and
+your password will stay as it is.
+```
+
+更新密码重置的HTML邮件模版：
+`app/views/user_mailer/password_reset.html.erb`
+```
+<h1>Password reset</h1>
+<p>To reset your password click the link below:</p>
+
+<%= link_to "Reset password", edit_password_reset_url(@user.reset_token,
+                                                      email: @user.email) %>
+<p>This link will expire in two hours.</p>
+
+<p>If you did not request your password to be reset, please ignore this email and
+your password will stay as it is.</p>
+```
+
+更新邮件预览定义文件：
+`test/mailers/previews/user_mailer_preview.rb`
+```
+  # 更新密码重置的邮件预览定义如下
+  # Preview this email at
+  # http://localhost:3000/rails/mailers/user_mailer/password_reset
+  def password_reset
+    user = User.first
+    user.reset_token = User.new_token
+    UserMailer.password_reset(user)
+  end
+```
+
+现在可以到如下地址确认邮件模版：
+```
+http://localhost:3000/rails/mailers/user_mailer/password_reset
+```
+
+在密码重置页面输入有效的邮箱，从服务器日志和Rails操作台查看用户密码重置的请求、响应和相关属性的生成情况。最后添加一个对密码重置的测试：
+`test/mailers/user_mailer_test.rb`
+```
+  test "password_reset" do
+    user = users(:michael)
+    user.reset_token = User.new_token
+    mail = UserMailer.password_reset(user)
+    assert_equal "Password reset", mail.subject
+    assert_equal [user.email], mail.to
+    assert_equal ["noreply@example.com"], mail.from
+    assert_match user.reset_token,        mail.body.encoded
+    assert_match CGI.escape(user.email),  mail.body.encoded
+  end
+```
+现在运行测试，确认测试可以顺利通过。
+
+### 重置密码
+
+这一部分将写密码重置控制器的`edit`动作用于执行密码重置操作，并准备集成测试。
+
+#### `edit`动作
+
+密码重置邮件将包含如下链接：
+```
+<server_url>/password_resets/<reset_digest>/edit?email=<user_email>
+```
+重置密码的表单与更新用户简介的表单类似，只是内容更简单，只包含输入和确认新密码的字段。因为需要用户邮箱来查找用户账户，在`edit`和`update`动作中都会用到。用户邮箱会在`edit`动作中有效，因为包含在密码重置URL中，直到提交表单。解决方案是使用一个隐藏的字段，将用户邮箱放到表单中但不显示在页面上，并随其他表单信息一同提交。
+
+更新密码重置的编辑视图：
+`app/views/password_resets/edit.html.erb`
+```
+<% provide(:title, 'Reset password') %>
+<h1>Reset password</h1>
+<div class="row">
+  <div class="col-md-6 col-md-offset-3">
+    <%= form_for(@user, url: password_reset_path(params[:id])) do |f| %>
+      <%= render 'shared/error_messages' %>
+      # 关键是添加如下一条语句
+      <%= hidden_field_tag :email, @user.email %>
+      <%= f.label :password %>
+      <%= f.password_field :password, class: 'form-control' %>
+      <%= f.label :password_confirmation, "Confirmation" %>
+      <%= f.password_field :password_confirmation, class: 'form-control' %>
+      <%= f.submit "Update password", class: "btn btn-primary" %>
+    <% end %>
+  </div>
+</div>
+```
+以上的隐藏字端使用的是`hidden_field_tag :email, @user.email`，而不是`f.hidden_field :email, @user.email`，因为前者允许重置链接使用`params[:email]`引用用户邮箱，后者需要`params[:user][:email]`。
+
+为了启用表单，需要在密码重置控制器的`edit`动作中定义`@user`变量，并确保在`edit`和`update`动作之前完成。就像用户激活，需要根据`params[:email]`中的邮箱信息找到用户账户，并确认用户有效，即存在、已经激活且可根据`params[:id]`中的重置令牌完成认证，为此更新密码重置控制器：
+`app/controllers/password_resets_controller.rb`
+```
+class PasswordResetsController < ApplicationController
+  # 在控制器头部添加如下两个过滤条件，强制在动作前找到并认证用户
+  before_action :get_user,   only: [:edit, :update]
+  before_action :valid_user, only: [:edit, :update]
+  ...
+  def edit
+  end
+
+  # 添加如下私有方法代码块
+  private
+    # 查找用户
+    def get_user
+      @user = User.find_by(email: params[:email])
+    end
+    # 验证用户
+    def valid_user
+      unless (@user && @user.activated? &&
+              @user.authenticated?(:reset, params[:id]))
+        redirect_to root_url
+      end
+    end
+end
+```
+
+#### `update`动作
+
+账户激活的`edit`动作更新用户激活属性，从`未激活`到`已激活`。密码重置的`edit`动作提交一个表单到`update`动作，并需要做如下考虑：
+1. 密码重置请求过期
+2. 由于不符合密码复杂度要求，密码重置更新失败
+3. 空密码和空密码确认造成的更新成功假象
+4. 成功的更新
+
+基于以上考量，更新密码重置控制器如下：
+`app/controllers/password_resets_controller.rb`
+```
+class PasswordResetsController < ApplicationController
+  before_action :get_user,         only: [:edit, :update]
+  before_action :valid_user,       only: [:edit, :update]
+  # 添加如下动作过滤器，用于处理密码重置请求过期的情况
+  before_action :check_expiration, only: [:edit, :update]
+
+  ...
+
+  def update
+    # 判断密码重置是否为空
+    if params[:user][:password].empty?
+      @user.errors.add(:password, "can't be empty")
+      render 'edit'
+    # 更新用户属性成功
+    elsif @user.update_attributes(user_params)
+      log_in @user
+      flash[:success] = "Password has been reset."
+      redirect_to @user
+    # 其他更新失败的情况，如密码不符合复杂度要求
+    else
+      render 'edit'
+    end
+  end
+
+  private
+    # 强制只接收密码和密码确认两个参数
+    def user_params
+      params.require(:user).permit(:password, :password_confirmation)
+    end
+    ...
+
+    # 检查密码重置令牌是否过期
+    def check_expiration
+      if @user.password_reset_expired?
+        flash[:danger] = "Password reset has expired."
+        redirect_to new_password_reset_url
+      end
+    end
+end
+```
+注意：
+1. 以上私有方法`check_expiration`调用的用户实例`password_reset_expired?`方法需要在用户模型中定义。
+2. 目前的用户模型允许空密码，参考以下密码验证语句，这里需要对重置密码为空的操作做出特别处理：
+```
+validates :password, presence: true, length: { minimum: 8 }, allow_nil: true
+```
+
+更新用户模型，添加`password_reset_expired?`方法定义：
+`app/models/user.rb`
+```
+class User < ApplicationRecord
+  ...
+  # 若密码重置请求提交超过两小时则返回真
+  def password_reset_expired?
+    reset_sent_at < 2.hours.ago
+  end
+
+  private
+    ...
+end
+```
+
+现在可以在密码重置页面验证之前定义的四种场景。
+
+#### 密码重置测试
+
+生成测试文件模版：
+```
+$ rails generate integration_test password_resets
+```
+
+具体测试过程与账户激活类似，流程如下：
+1. 访问`forgot password`链接
+2. 先后提交无效和有效的用户邮箱地址
+3. 对有效邮箱地址生成密码重置令牌并发送重置邮件
+4. 通过邮件访问重置链接，先后提交无效和有效信息
+5. 验证密码重置页面可以正确处理无效和有效信息
+
+根据以上流程更新密码重置的集成测试：
+`test/integration/password_resets_test.rb`
+```
+require 'test_helper'
+
+class PasswordResetsTest < ActionDispatch::IntegrationTest
+
+  def setup
+    ActionMailer::Base.deliveries.clear
+    @user = users(:michael)
+  end
+
+  test "password resets" do
+    # 导航到密码重置页面，确认使用了正确视图模版
+    get new_password_reset_path
+    assert_template 'password_resets/new'
+    # 输入无效邮箱地址，确认闪信内容不为空，跳转回密码重置页面
+    post password_resets_path, params: { password_reset: { email: "" } }
+    assert_not flash.empty?
+    assert_template 'password_resets/new'
+    # 输入有效的邮箱地址，确认重置摘要有更新，发送了一封邮件，闪信不为空，重定向到根页面
+    post password_resets_path,
+         params: { password_reset: { email: @user.email } }
+    assert_not_equal @user.reset_digest, @user.reload.reset_digest
+    assert_equal 1, ActionMailer::Base.deliveries.size
+    assert_not flash.empty?
+    assert_redirected_to root_url
+    # 将当前用户读入变量
+    user = assigns(:user)
+    # 重置链接中提交无效邮箱信息，重定向到根页面
+    get edit_password_reset_path(user.reset_token, email: "")
+    assert_redirected_to root_url
+    # 重置链接中邮箱关联的用户账户未激活，重定向到根页面
+    user.toggle!(:activated)
+    get edit_password_reset_path(user.reset_token, email: user.email)
+    assert_redirected_to root_url
+    user.toggle!(:activated)
+    # 重置链接中的邮箱和相关用户有效，但激活令牌无效，重定向到根页面
+    get edit_password_reset_path('wrong token', email: user.email)
+    assert_redirected_to root_url
+    # 重置链接中邮箱和激活令牌都有效，确认抵达密码重制`edit`视图，页面中有隐藏邮箱字段
+    get edit_password_reset_path(user.reset_token, email: user.email)
+    assert_template 'password_resets/edit'
+    assert_select "input[name=email][type=hidden][value=?]", user.email
+    # 测试在密码重置页面提交不匹配的密码和密码确认，确认有错误信息
+    patch password_reset_path(user.reset_token),
+          params: { email: user.email,
+                    user: { password:              "foobaz",
+                            password_confirmation: "barquux" } }
+    assert_select 'div#error_explanation'
+    # 测试更新为空密码，确认有错误信息
+    patch password_reset_path(user.reset_token),
+          params: { email: user.email,
+                    user: { password:              "",
+                            password_confirmation: "" } }
+    assert_select 'div#error_explanation'
+    # 测试更新密码有效，确认用户自动登录，闪信不为空，页面跳转到和用户简介
+    patch password_reset_path(user.reset_token),
+          params: { email: user.email,
+                    user: { password:              "foobaz",
+                            password_confirmation: "foobaz" } }
+    assert is_logged_in?
+    assert_not flash.empty?
+    assert_redirected_to user
+  end
+end
+```
+运行测试，验证没有错误。
+
+#### 一点优化
+
+更新用户模型的重置摘要生成方法，将两次数据库访问合并为一次：
+`app/models/user.rb`
+```
+  def create_reset_digest
+    self.reset_token = User.new_token
+    # 以下为合并后的方法
+    update_columns(reset_digest:  User.digest(reset_token), reset_sent_at: Time.zone.now)
+    # 以下为合并之前的方法
+    # update_attribute(:reset_digest,  User.digest(reset_token))
+    # update_attribute(:reset_sent_at, Time.zone.now)
+  end
+```
+
+更新密码重置集成测试，增加对过期密码重置请求的测试：
+`test/integration/password_resets_test.rb`
+```
+require 'test_helper'
+class PasswordResetsTest < ActionDispatch::IntegrationTest
+  def setup
+    ActionMailer::Base.deliveries.clear
+    @user = users(:michael)
+  end
+  ...
+  test "expired token" do
+    get new_password_reset_path
+    post password_resets_path,
+         params: { password_reset: { email: @user.email } }
+
+    @user = assigns(:user)
+    @user.update_attribute(:reset_sent_at, 3.hours.ago)
+    patch password_reset_path(@user.reset_token),
+          params: { email: @user.email,
+                    user: { password:              "foobar",
+                            password_confirmation: "foobar" } }
+    assert_response :redirect
+    follow_redirect!
+    assert_match /expired/i, response.body
+  end
+end
+```
+以上验证密码重置请求过期处理结果，在重定向后的页面中寻找`expired`关键字。
+
+作为一个安全漏洞，保存在数据库中的密码重置摘要应该在密码成功修改后清空，否则恶意用户可以在两小时过期时间内再次使用同一密码重置链接访问密码重置页面，重置密码并控制相应的用户账户。为此，更新密码重置控制器：
+`app/controllers/password_resets_controller.rb`
+```
+class PasswordResetsController < ApplicationController
+  ...
+  def update
+    if params[:user][:password].empty?
+      @user.errors.add(:password, "can't be empty")
+      render 'edit'
+    elsif @user.update_attributes(user_params)
+      log_in @user
+      # 增加如下一行代码
+      @user.update_attribute(:reset_digest, nil)
+      flash[:success] = "Password has been reset."
+      redirect_to @user
+    else
+      render 'edit'
+    end
+  end
+  ...
+end
+```
+为测试账户密码重置后清除密码重置摘要，更新密码重置的集成测试：
+``
+```
+  test "password resets" do
+    ...
+    assert_redirected_to user
+    # 增加如下一条语句，验证成功重置密码后摘要已经从用户属性中清除
+    assert_nil user.reload.reset_digest
+  end
+```
+
+运行测试，验证一切正常。也可以修改程序源码或测试代码进行反向测试。
+
+### 生产邮件和收尾
+
+参考前一个章节的生产邮件章节，如果配置了SendGrid这里就不需要再操作。进入收尾：
+```
+$ rails test
+$ git add -A
+$ git commit -m "Add password reset"
+$ git checkout master
+$ git merge password-reset
+$ rails test
+$ git push
+$ git push heroku
+$ heroku run rails db:migrate
+```
+
+打开Heroku的APP链接，验证已有用户的密码重置功能，祝你好运。
