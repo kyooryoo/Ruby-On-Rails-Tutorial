@@ -1142,11 +1142,11 @@ assert_select 'form[action="/signup"]'
 5. 如果用户通过认证，修改状态从未激活到已经激活
 
 由于以上操作与密码和记忆令牌有很多相似之处，我们可以重用`User.digest`和`User.new_token`等方法于用户激活：
-find by	string			digest			authentication
-email	password		password_digest		authenticate(password)
-id	remember_token		remember_digest		authenticated?(:remember, token)
-email	activation_token	activation_digest	authenticated?(:activation, token)
-email	reset_token		reset_digest		authenticated?(:reset, token)
+* find by / string / digest / authentication
+* email / password / password_digest / authenticate(password)
+* id / remember_token		remember_digest / authenticated?(:remember, token)
+* email / activation_token / activation_digest / authenticated?(:activation, token)
+* email / reset_token / reset_digest / authenticated?(:reset, token)
 
 下面，我们要建立资源和数据模型用于用户账户激活，添加一个邮件模块用于发送用户激活邮件，实施用户激活，包括一个通用的`authenticated?`方法。
 
@@ -1189,9 +1189,9 @@ Named route: edit_account_activation_url(token)
 * 并添加一个记录激活时间的用户属性
 
 总共添加的用户属性包括：
-activation_digest	string
-activated		boolean
-activated_at		date time
+* activation_digest	string
+* activated		boolean
+* activated_at		date time
 
 使用如下命令添加以上三个属性到用户模型：
 ```
