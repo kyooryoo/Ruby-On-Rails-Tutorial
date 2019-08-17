@@ -261,7 +261,8 @@ $ rails test
 ### 编辑成功
 
 这里使用测试驱动开发的TDD方法，先完成测试部分代码，模拟编辑成功情况下的流程：
-更新测试文件`test/integration/users_edit_test.rb`，添加如下测试场景设计： ```
+更新测试文件`test/integration/users_edit_test.rb`，添加如下测试场景设计：
+```
   test "successful edit" do
     get edit_user_path(@user)
     assert_template 'users/edit'
@@ -1130,17 +1131,17 @@ assert_select 'form[action="/signup"]'
 
 ## 第十一章 激活用户
 
-这一部分添加邮箱认证功能，确认用户对其用户名的邮箱具有实际的控制。涉及关联激活令牌和摘要到用户账户，将激活令牌的链接通过邮箱发送给用户，在用户点击该链接时激活用户账户。同样的技术也会用在下一个章节，用于重制用户密码。为实现该功能，将要创建新的资源，学到更多关于控制器、路由和数据库迁移的知识，当然还有通过Rails发送邮件的方法。
+这一部分添加基于邮箱的账户认证功能，确认用户对其用户名邮箱的实际控制。涉及关联激活令牌和摘要到用户账户，将带有激活令牌的链接通过邮件发送给用户，在用户点击该链接时激活其账户。同样的技术也会用在下一个章节，用于重制用户密码。为实现以上功能，将要创建用户激活资源，了解更多关于控制器、路由和数据库迁移的知识，当然还有通过Rails发送邮件的方法。
 
-用户激活的操作逻辑类似用户登录和登录记忆功能的实现，包括以下步骤：
-1. 将用户初始化在“未激活”的状态
-2. 在用户注册时生成激活令牌和摘要
-3. 保存激活摘要到数据库
+用户激活的操作逻辑与用户登录和登录状态记忆功能追加的过程类似，包括以下步骤：
+1. 将初始化的用户放在“未激活”的状态
+2. 在用户注册时生成激活令牌和摘要（即一个随机字符串和其哈希值）
+3. 保存激活摘要到数据库（避免令牌被恶意用户从数据库获取后用于账户激活）
 4. 发送邮件到用户，包含一个带有激活令牌和用户邮箱地址的链接
-4. 当用户点击邮件中的链接，根据邮箱地址找到用户，通过认证摘要验证收到的令牌
-5. 如果用户通过认证，修改状态从未激活到已经激活
+4. 当用户点击邮件中的链接，根据邮箱地址找到用户，通过认证摘要验证令牌有效
+5. 如果用户通过认证，修改用户账户状态从“未激活”到“已激活”
 
-由于以上操作与密码和记忆令牌有很多相似之处，我们可以重用`User.digest`和`User.new_token`等方法于用户激活：
+由于以上操作与密码和记忆令牌有很多相似之处，我们可以重用`User.digest`和`User.new_token`等方法于账户激活：
 * find by / string / digest / authentication
 * email / password / password_digest / authenticate(password)
 * id / remember_token		remember_digest / authenticated?(:remember, token)
@@ -1151,7 +1152,7 @@ assert_select 'form[action="/signup"]'
 
 ### 账户激活资源
 
-我们将为用户激活建模，将其作为一种资源，即便与`Active Record`模型没有关系，在用户模型中将会添加相关的激活令牌和激活状态信息。因为将账户激活作为一种资源，我们将使用标准REST URL与其交互，使用激活链接修改用户的激活状态。标准REST操作默认使用PATCH请求在`update`动作上。因为激活链接通过邮件发出，涉及基于浏览器的鼠标点击操作，会产生GET请求而不是PATCH请求。因此这个设计上的限制条件意味着我们不可以使用`update`动作，但可以使用可以响应GET请求的`edit`动作。
+我们将为用户激活建模，将其作为一种资源，即便与`Active Record`模型没有关系，在用户模型中仍然将会添加相关的激活令牌和激活状态信息。因为账户激活是一种资源，我们将使用标准REST URL与其交互，使用激活链接修改用户的激活状态。标准REST操作默认使用PATCH请求在`update`动作上。因为激活链接通过邮件发出，涉及基于浏览器的鼠标点击操作，会产生GET请求而不是PATCH请求。因此这个设计上的限制条件意味着我们不可以使用`update`动作，但可以使用可以响应GET请求的`edit`动作。
 
 这里先创建本节代码分支：
 ```
@@ -1163,8 +1164,7 @@ $ git checkout -b account-activation
 $ rails generate controller AccountActivations
 ```
 
-邮件中的激活用URL格式为：edit_account_activation_url(activation_token, ...)
-我们需要为`edit`动作指定特定路径，为此更新路由设置文件：
+生成邮件中的激活用URL的方法为：edit_account_activation_url(activation_token, ...)，因此需要为`edit`动作指定路径，为此更新路由设置文件：
 `config/routes.rb`
 ```
 Rails.application.routes.draw do
@@ -1173,33 +1173,37 @@ Rails.application.routes.draw do
   resources :account_activations, only: [:edit]
 end
 ```
+生成的URL路径和请求等相关信息如下：
+```
 HTTP Request: GET
 URL: http://ex.co/account_activation/<token>/edit
 Action: edit
 Named route: edit_account_activation_url(token)
+```
 
 ### 账户激活数据模型
 
-激活令牌如果直接保存到数据库会带来安全隐患，恶意用户可以通过访问数据库获得激活令牌，激活用户，修改密码并使用新建并激活的用户身份访问应用。为防止此类安全问题，不在数据中保存激活令牌，而是通过哈希计算得到的摘要信息。
+激活令牌如果直接保存到数据库会带来安全隐患，恶意用户可以通过访问数据库获得激活令牌，激活用户，修改密码并使用新建并激活的用户身份访问应用。为防止此类安全问题，不在数据中直接保存激活令牌，而是保存通过哈希计算从令牌得到的摘要信息。
 
-* 要访问用户的激活令牌，使用命令：user.activation_token
-* 要认证用户，使用命令：user.authenticated?(:activation, token)
-* 要确认用户是否激活，使用命令：if user.activated?
-* 并添加一个记录激活时间的用户属性
+对用户模型做如下更新：
+* 访问用户的激活令牌，使用命令：user.activation_token
+* 认证用户，使用命令：user.authenticated?(:activation, token)
+* 确认用户是否激活，使用命令：if user.activated?
+* 添加一个记录激活时间的用户属性
 
-总共添加的用户属性包括：
-* activation_digest	string
-* activated		boolean
-* activated_at		date time
+添加的用户属性包括：
+* activation_digest	/ string
+* activated	/ boolean
+* activated_at	/	date time
 
 使用如下命令添加以上三个属性到用户模型：
 ```
 $ rails generate migration add_activation_to_users \
 > activation_digest:string activated:boolean activated_at:datetime
 ```
-注意，以上命令是一条，需要连续输入或直接粘贴到终端运行。
+注意，以上命令是一条，需要连续输入或直接粘贴到终端运行，粘贴时第二行不要出现两个`>`符号，否则生成的数据迁移文件不完整。
 
-编辑数据库迁移文件，指定激活属性默认为否：
+编辑数据库迁移文件，指定激活属性默认为`否`：
 `db/migrate/[timestamp]_add_activation_to_users.rb`
 ```
 class AddActivationToUsers < ActiveRecord::Migration[5.0]
@@ -1211,6 +1215,7 @@ class AddActivationToUsers < ActiveRecord::Migration[5.0]
   end
 end
 ```
+如果不做特殊指定，以上激活状态属性默认为`nil`也会被系统判断为`false`，只是这里特别指定会更明确且易读。
 
 发起数据库迁移，完成数据模型的更新：
 ```
@@ -1225,6 +1230,7 @@ class User < ApplicationRecord
   attr_accessor :remember_token, :activation_token
   before_save   :downcase_email
   before_create :create_activation_digest
+  
   validates :name,  presence: true, length: { maximum: 50 }
   ...
   private
@@ -1243,7 +1249,7 @@ end
 ```
 以上将新添加的两个方法设为私有，因为程序的最终用户不会直接用到这些方法。
 
-更新数据库样本用户定义文件：
+更新数据库样本用户定义文件，将生成100个样本用户：
 `db/seeds.rb`
 ```
 User.create!(name:  "Example User",
@@ -1326,15 +1332,15 @@ $ rails db:seed
 
 ### 账户激活邮件
 
-现在，可以使用`Action Mailer`库启用电子邮件功能，使用用户控制器中的`create`方法发送带有激活链接的邮件。就像用控制动作调用视图文件一样，邮件也是如此通过模版发送。模版中包含激活令牌和需要被激活的邮箱地址。
+使用`Action Mailer`的电子邮件功能，通过用户控制器中的`create`方法发送带有激活链接的邮件。就像用控制器中的其他动作调用视图文件一样，邮件也是如此通过邮件控制器中定义的动作调用视图模版发送，模版中包含激活令牌和需要被激活的邮箱地址。
 
-使用Rails自带功能生成`Mailer`模块，与控制器与视图等模块平行：
+使用Rails自带功能生成`Mailer`模块，与生成控制器及其动作的方法相同，这里的`mailer`虽然不放在控制器文件夹中，但作用类似于控制器：
 ```
 $ rails generate mailer UserMailer account_activation password_reset
 ```
-这里也创建了`password_reset`方法，为了下一个章节添加重制密码功能使用。
+这里除了`account_activation`也创建了`password_reset`方法，为了下一个章节添加重制密码功能使用。
 
-定制生成的邮件模版：
+定制生成的邮件应用，设置了：
 `app/mailers/application_mailer.rb`
 ```
 class ApplicationMailer < ActionMailer::Base
@@ -1348,28 +1354,28 @@ end
 `app/mailers/user_mailer.rb`
 ```
 class UserMailer < ApplicationMailer
-  # 更新以下方法
+  # 这里只需要更新以下方法
   def account_activation(user)
     @user = user
     mail to: user.email, subject: "Account activation"
   end
-  # 以下方法在下一章更新
+  # 下一章才会涉及下面的方法
   def password_reset
     @greeting = "Hi"
-
     mail to: "to@example.org"
   end
 end
 ```
 
-下面使用嵌入式Ruby定制文本视图模版：
+用嵌入式Ruby定制邮件的文本视图模版：
 `app/views/user_mailer/account_activation.text.erb`
 ```
 Hi <%= @user.name %>,
 Welcome to the Sample App! Click on the link below to activate your account:
 <%= edit_account_activation_url(@user.activation_token, email: @user.email) %>
 ```
-定制HTML视图模版：
+
+用嵌入式Ruby定制邮件的HTML视图模版：
 `app/views/user_mailer/account_activation.html.erb`
 ```
 <h1>Sample App</h1>
@@ -1380,10 +1386,10 @@ Welcome to the Sample App! Click on the link below to activate your account:
 ```
 
 以上代码中，最后一行将会生成如下URL地址：
-<base_url>/account_activations/<activation_token>/edit?email=<user_email>
+`<base_url>/account_activations/<activation_token>/edit?email=<user_email>`
 * <base_url>为Rails服务器的基础URL地址
-* <activation_token>为使用`new_token`方法创建的URL格式安全的base64格式字符串
-* URL中?后的查询参数是由原始参数中的`email: @user.email`代入
+* <activation_token>为`new_token`方法创建的兼容URL的base64格式字符串
+* URL中?后的URL格式查询参数由原始参数中的`email: @user.email`代入
 
 某些特殊符号在编码到URL中时需要做转换，例如`@`需要编码为`%40`，在Rails中有命令可以完成：
 ```
@@ -1394,20 +1400,21 @@ $ rails console
 
 ### 预览邮件
 
-Rails提供特殊的URL以便查看邮件结果，配置开发环境如下：
+Rails提供特殊的URL预览邮件的发送结果，更新开发环境配置文件如下：
 `config/environments/development.rb`
 ```
   # 以下配置项原始值为false
   config.action_mailer.raise_delivery_errors = true
   config.action_mailer.delivery_method = :test
-  host = 'example.com' # Don't use this literally; use your local dev host instead
-  # Use this on the cloud IDE.
-  config.action_mailer.default_url_options = { host: host, protocol: 'https' }
-  # Use this if developing on localhost.
-  # config.action_mailer.default_url_options = { host: host, protocol: 'http' }
+  # 修改以下占位符为实际服务器地址，我的环境是`localhost:3000`
+  host = 'example.com'
+  # 在Cloud9的IDE环境使用如下配置，定义使用HTTPS协议
+  # onfig.action_mailer.default_url_options = { host: host, protocol: 'https' }
+  # 在本地的开发环境使用如下配置，定义使用HTTP协议
+  config.action_mailer.default_url_options = { host: host, protocol: 'http' }
 ```
 
-更新邮件预览的视图文件：
+更新预览邮件的视图定义文件：
 `test/mailers/previews/user_mailer_preview.rb`
 ```
   def account_activation
@@ -1427,12 +1434,15 @@ http://localhost:3000/rails/mailers/user_mailer/account_activation
 require 'test_helper'
 class UserMailerTest < ActionMailer::TestCase
   test "account_activation" do
+    # 调取测试样本用户，生成激活令牌，生成邮件实例
     user = users(:michael)
     user.activation_token = User.new_token
     mail = UserMailer.account_activation(user)
+    # 确认邮件标题，接收人，发送人
     assert_equal "Account activation", mail.subject
     assert_equal [user.email], mail.to
     assert_equal ["noreply@example.com"], mail.from
+    # 确认用户姓名、激活令牌、URL兼容格式的用户邮箱等包含在邮件正文中
     assert_match user.name,               mail.body.encoded
     assert_match user.activation_token,   mail.body.encoded
     assert_match CGI.escape(user.email),  mail.body.encoded
@@ -1444,21 +1454,23 @@ end
 `config/environments/test.rb`
 ```
   config.action_mailer.delivery_method = :test
-  # 添加如下一条配置语句
+  # 添加如下一条配置语句，使用实际服务器地址替换占位符'example.com'
   config.action_mailer.default_url_options = { host: 'example.com' }
 ```
 
-现在可以运行测试，确认没有问题。
+运行测试，确认到目前为止的代码没有问题。
 
 ### 更新用户创建动作
 
-这里因为新用户注册后还需要激活，用户创建动作的定义也需要更新。原来新用户注册后页面跳转到用户简介，现在需要跳转到网站根页面。
+因为新用户注册后需要激活，用户控制器中的`create`动作定义也需要更新。
+
+之前，新用户注册后直接登录并跳转到用户简介，现在因为额外的激活步骤要在注册后跳转到网站根页面。
 `app/controllers/users_controller.rb`
 ```
   def create
     @user = User.new(user_params)
     if @user.save
-      # 更新以下三条语句
+      # 更新以下三条语句，发送激活邮件，显示闪信，重定向到根页面
       UserMailer.account_activation(@user).deliver_now
       flash[:info] = "Please check your email to activate your account."
       redirect_to root_url
@@ -1468,7 +1480,7 @@ end
   end
 ```
 
-由于以上修改，用户注册后不会跳转到简介页面，也不会立即自动登录，需要相应的修改测试文件：
+由于以上修改，用户注册后不会跳转到简介页面，也不会立即自动登录，因此需要修改相应的测试文件：
 `test/integration/users_signup_test.rb`
 ```
   test "valid signup information" do
@@ -1480,44 +1492,48 @@ end
                                          password_confirmation: "password" } }
     end
     follow_redirect!
-    # 这里只需要注销以下两条语句即可
+    # 这里注销以下两条语句，不再确认跳转到用户列表，也不再确认用户是否登录
     # assert_template 'users/show'
     # assert is_logged_in?
   end
 ```
-运行测试，确保一切正常。
+运行测试，确保到目前为止的代码正常。
 
 ## 激活账户
 
-目前已经正确生成了邮件，下面在用户激活控制器中加入`edit`动作用于激活用户。如惯例，根据TDD测试驱动开发的推荐操作流程，先写出测试代码，在通过测试后再进行优化，将部分功能从账户激活控制器中。
+目前已经正确生成了邮件，下面在用户激活控制器中加入`edit`动作用于激活用户。如惯例，根据TDD测试驱动开发的流程，先写出测试代码，通过测试后再进行优化，将部分功能从账户激活控制器中抽取到用户模型中。
 
 ### 通用认证
 
-激活令牌和邮箱地址分别通过`params[:id]`和`params[:email]`引用，根据密码和记忆令牌的模型，我们计划使用如下代码验证用户：
+激活链接URL中的激活令牌和邮箱地址分别通过`params[:id]`和`params[:email]`引用，根据密码和记忆令牌的模型，计划使用如下方法验证用户：
 ```
+# 根据用户邮箱地址查找用户对象，判断用户存在且认证成功
 user = User.find_by(email: params[:email])
 if user && user.authenticated?(:activation, params[:id])
 ```
-以上代码使用`authenticated?`方法验证账户激活摘要和拿到的令牌是否匹配，但是以上代码现在还无法工作，因为当前的`authenticated?`方法只用于处理记忆令牌：
+以上代码使用`authenticated?`方法验证数据库中保存的账户激活摘要和通过激活链接拿到的激活令牌是否能够匹配。但是现在还无法工作，因为当前它只能处理密码的记忆令牌：
 ```
 def authenticated?(remember_token)
+  # 如果没有密码记忆摘要，则返回否
   return false if remember_digest.nil?
+  # 查看拿到的记忆令牌与摘要是否匹配
   BCrypt::Password.new(remember_digest).is_password?(remember_token)
 end
 ```
-以上的`remember_digest`是用户模型的属性，在模型内部使用`self.remember_digest`引用该属性，属性`activation_digest`也类似。为了在同一方法中对这两个属性通过同一变量引用，这里介绍Ruby的特性之一`metaprogramming`概念，即使用一个程序编写另一个程序。本例中，关键是`send`方法，可以作为实例的内建方法返回属性值：
+以上的`remember_digest`是用户模型的属性，在模型内部使用`self.remember_digest`引用该属性，属性`activation_digest`也类似。为了在同一方法中对这两个属性通过同一变量引用，这里介绍Ruby的特性之一`metaprogramming`概念，即使用一个程序编写另一个程序。本例中，关键是`send`方法，它可以作为对象实例的内建方法返回属性值：
 ```
 $ rails console
 >> a = [1, 2, 3]
+# 查看数组对象的内建属性
 >> a.length
 => 3
+# 使用实例对象的内建方法`send`返回属性值
 >> a.send(:length)
 => 3
 >> a.send("length")
 => 3
-# 使用如上的类似方法
+# 使用如上的类似方法返回用户实例的属性值
 >> user = User.first
-...
 >> user.activation_digest
 => "$2a$10$qR7ZAXyKCFcm8YfL1t31VuVxvc1sgYD/jjI.HEmUIbLHvel38K1Rm"
 >> user.send(:activation_digest)
@@ -1529,7 +1545,8 @@ $ rails console
 >> user.send("#{attribute}_digest")
 => "$2a$10$qR7ZAXyKCFcm8YfL1t31VuVxvc1sgYD/jjI.HEmUIbLHvel38K1Rm"
 ```
-如上在`user`变量，即某个User实例，上调用`send`方法，加上用变量名生成的属性值，即可用一个方法处理记忆令牌摘要和激活令牌摘要。根据以上操作方法，更新用户模型：
+
+如上，在`user`实例对象上调用`send`方法，加上用变量名生成的属性值，即可用同一个方法处理记忆令牌摘要和激活令牌摘要。据此，更新用户模型：
 `app/models/user.rb`
 ```
   def authenticated?(attribute, token)
@@ -1538,7 +1555,8 @@ $ rails console
     BCrypt::Password.new(digest).is_password?(token)
   end
 ```
-更新使用了`authenticated?`方法的文件：
+
+由于以上更新改变了`authenticated?`方法的调用方式，这里还需要更新使用`authenticated?`的方法，例如会话帮助文件：
 `app/helpers/sessions_helper.rb`
 ```
   def current_user
@@ -1546,7 +1564,7 @@ $ rails console
       @current_user ||= User.find_by(id: user_id)
     elsif (user_id = cookies.signed[:user_id])
       user = User.find_by(id: user_id)
-      # 更新以下一行代码
+      # 更新以下一行代码，更改硬写入的密码记忆摘要参数为新的编程方式生成
       if user && user.authenticated?(:remember, cookies[:remember_token])
         log_in user
         @current_user = user
@@ -1554,49 +1572,55 @@ $ rails console
     end
   end
 ```
-以及：
+
+以及用户模型的测试文件：
 `test/models/user_test.rb`
 ```
   test "authenticated? should return false for a user with nil digest" do
-    # 更新这里的一行代码
+    # 更新这里的一行代码，同样更新记忆令牌参数的生成方式
     assert_not @user.authenticated?(:remember, '')
   end
 ```
 
-### 编辑激活
+### 激活用`edit`方法
 
-根据以上结果，更新用户激活控制器，添加编辑方法用于激活用户：
+更新用户激活控制器，添加`edit`方法用于激活用户：
 `app/controllers/account_activations_controller.rb`
 ```
     def edit
+        # 根据URL中的email参数查找用户账户
         user = User.find_by(email: params[:email])
+        # 在用户账户存在，尚未激活，且认证通过的情况下继续
         if user && !user.activated? && user.authenticated?(:activation, params[:id])
+          # 更新已激活账户属性为真，更新激活时间戳为当前时间
           user.update_attribute(:activated,    true)
           user.update_attribute(:activated_at, Time.zone.now)
+          # 登录当前用户，显示激活成功的闪信，并重定向到用户简介页面
           log_in user
           flash[:success] = "Account activated!"
           redirect_to user
+        # 如果用户账户不存在或认证没有通过，则返回错误信息，重定向到网站根页面
         else
           flash[:danger] = "Invalid activation link"
           redirect_to root_url
         end
     end
 ```
-以上代码的逻辑是，根据邮箱地址找到用户，判断用户账户存在，没有激活，且得到的激活令牌与保存的摘要相匹配。如是则更新用户的激活状态属性值为真，更新激活时间属性为当前时间，登录用户，发送账户激活成功的闪信，重定向页面到用户简介页面。否则闪信显示激活链接无效的信息，重定向到网站根页面。
+以上代码的逻辑是，根据邮箱地址找到用户，判断用户账户存在且尚未激活，且得到的激活令牌与保存的摘要相匹配，即认证成功。如是，则更新用户的激活状态属性值为真，更新激活时间属性为当前时间，登录用户，发送账户激活成功的闪信，重定向页面到用户简介页面。否则，闪信显示激活链接无效的信息，重定向到网站根页面。
 
 现在，可以复制之前验证激活邮件时创建新用户得到的激活链接到浏览器，即完成新建用户的账户激活：
 ```
 http://localhost:3000/account_activations/sGhyPVRE5m6EDsJX_Z6Lgg/edit?email=user%40example.com
 ```
-如果页面跳转到用户简介，并且有账户已激活的闪信出现，则证明账户操作已经成功。
+以上为我得到的激活链接。如果页面跳转到用户简介页面，并且有账户已激活的闪信通知出现，则说明账户操作已经成功。
 
-现在，程序实际上允许账户未激活用户登录，可以注册一个新用户验证。为了修复这个漏洞，需要在用户登录操作的会话控制器动作`create`中加入验证用户账户激活的逻辑：
+现在，程序实际上允许未激活的用户账户登录，各位可以注册一个新用户验证这个漏洞。为修正该漏洞，需要在用户登录操作的会话控制器动作`create`中加入验证用户账户激活的逻辑：
 `app/controllers/sessions_controller.rb`
 ```
   def create
     user = User.find_by(email: params[:session][:email].downcase)
     if user && user.authenticate(params[:session][:password])
-      # 更新本部分代码为如下
+      # 更新本部分代码为如下，只允许已激活用户登录，否则显示错误提示并重定向到网站根页面
       if user.activated?
         log_in user
         params[:session][:remember_me] == '1' ? remember(user) : forget(user)
@@ -1613,11 +1637,11 @@ http://localhost:3000/account_activations/sGhyPVRE5m6EDsJX_Z6Lgg/edit?email=user
     end
   end
 ```
-在确认用户账户存在和密码正确后，判断账户是否激活，如是则登录用户，跳转到用户简介页面，如否则闪信账户未激活并提示查看邮件确认激活链接，跳转到网站根页面。
+在确认用户账户存在和密码正确后，判断账户是否激活。如是，则登录用户，跳转到用户简介页面。如否，则闪信通知账户未激活并提示查看邮件确认激活链接，跳转到网站根页面。
 
-### 测试优化
+### 激活功能的集成测试
 
-这里添加对用户激活的集成测试：
+这里添加对用户激活功能的集成测试：
 `test/integration/users_signup_test.rb`
 ```
   # 添加如下测试配置
@@ -1636,19 +1660,20 @@ http://localhost:3000/account_activations/sGhyPVRE5m6EDsJX_Z6Lgg/edit?email=user
                                          password_confirmation: "password" } }
     end
     # 添加如下测试语句段落
+    # 确认发送了一个邮件，且当前用户账户尚未激活
     assert_equal 1, ActionMailer::Base.deliveries.size
     user = assigns(:user)
     assert_not user.activated?
-    # 测试在账户激活前尝试登录
+    # 测试在账户激活前尝试登录，确认登录不成功
     log_in_as(user)
     assert_not is_logged_in?
-    # 测试激活令牌无效，但邮箱有效
+    # 测试激活令牌无效，但邮箱有效，确认登录不成功
     get edit_account_activation_path("invalid token", email: user.email)
     assert_not is_logged_in?
-    # 测试激活令牌有效，但邮箱错误
+    # 测试激活令牌有效，但邮箱错误，确认登录不成功
     get edit_account_activation_path(user.activation_token, email: 'wrong')
     assert_not is_logged_in?
-    # 测试有效的激活令牌和邮箱
+    # 测试有效的激活令牌和邮箱，确认登录成功
     get edit_account_activation_path(user.activation_token, email: user.email)
     assert user.reload.activated?
 
@@ -1658,17 +1683,22 @@ http://localhost:3000/account_activations/sGhyPVRE5m6EDsJX_Z6Lgg/edit?email=user
     assert is_logged_in?
   end
 ```
-以上语句中，对重要的部分说明如下。如下语句确认只发送了一条信息：
+
+以上语句中，如下语句确认只发送了一条邮件：
 ```
 assert_equal 1, ActionMailer::Base.deliveries.size
 ```
-其中，数组`Base.deliveries`为全局变量，因此需要在配置本测试的`setup`中将其重置，以防止其他测试中因为发送邮件更改了该全局变量而影响这里的测试结果。之后的`assigns`语句允许用户访问这里创建的实例变量：
+其中，数组`Base.deliveries`为全局变量，因此需要在配置本测试的`setup`中将其重置，以防止因为其他测试中发送过邮件而更改了该全局变量，影响这里的测试结果。之后的`assigns`语句允许用户访问这里创建的实例变量：
 ```
 user = assigns(:user)
 ```
 例如，用户控制器的`create`动作定义了一个`@user`变量，在测试中可以用`assigns(:user)`访问它。注意，`assigns`方法已经在Rails5中停用，这里通过引用`rails-controller-testing`的gem库继续使用。
 
-现在运行测试，应该可以通过。以下，作为对代码的优化，将一部分用户操作从控制器移出到模型中去，将创建`activate`方法来更新用户激活状态属性，创建`send_activation_email`方法来发送激活邮件。
+现在运行测试一次，确认可以通过，代码没有问题。
+
+### 代码的结构优化
+
+以下，作为对代码的优化，将一部分用户操作从用户控制器移出到用户模型中去，将创建`activate`方法来更新用户激活状态属性，创建`send_activation_email`方法来发送激活邮件。
 
 添加用户激活相关方法到用户模型：
 `app/models/user.rb`
@@ -1677,12 +1707,14 @@ class User < ApplicationRecord
   ...
   # 激活用户账户
   def activate
+    # 设置已激活属性为真，更新激活时间戳为当前时间
     update_attribute(:activated,    true)
     update_attribute(:activated_at, Time.zone.now)
   end
 
   # 发送激活邮件
   def send_activation_email
+    # 立即发送激活邮件
     UserMailer.account_activation(self).deliver_now
   end
 
@@ -1697,7 +1729,7 @@ end
   def create
     @user = User.new(user_params)
     if @user.save
-      # 添加如下代码，替换原有命令
+      # 添加如下代码，使用用户模型中的方法
       @user.send_activation_email
       # UserMailer.account_activation(@user).deliver_now
       flash[:info] = "Please check your email to activate your account."
@@ -1714,7 +1746,7 @@ end
   def edit
     user = User.find_by(email: params[:email])
     if user && !user.activated? && user.authenticated?(:activation, params[:id])
-      # 添加如下一行代码，替换原有的两行代码
+      # 添加如下一行代码，使用用户模型中的方法替换原有的两行代码
       user.activate
       # user.update_attribute(:activated,    true)
       # user.update_attribute(:activated_at, Time.zone.now)
@@ -1738,31 +1770,31 @@ end
   end
 ```
 
-进一步优化，从用户列表中隐藏未激活用户账户，从
+再进一步优化，从用户列表中隐藏未激活用户账户，更新用户控制器文件：
 `app/controllers/users_controller.rb`
 ```
   def show
     @user = User.find(params[:id])
-    # 添加如下代码，访问未激活用户简介会直接跳转到网站根页面
+    # 添加如下代码，访问未激活用户的简介会直接跳转到网站根页面
     redirect_to root_url and return unless @user.activated?
   end
 
   def index
-    # 更新如下代码，只显示激活的用户账户
+    # 更新如下代码，在用户列表中只显示已激活的用户账户
     @users = User.where(activated: true).paginate(page: params[:page])
     # @users = User.paginate(page: params[:page])
   end
 ```
 
-## 生产邮件
+## 生产环境的邮件
 
-在生产环境中真正的发送邮件，这里使用Heroku的`SendGrid`添加件，配置过程如下：
+为模拟在生产环境中真正的发送邮件，这里使用Heroku的`SendGrid`添加件，配置过程如下：
 ```
 $ heroku addons:create sendgrid:starter -a <your_app_name>
 ```
 如果提示需要确认账户，则导航到如下链接输入信用卡信息：
-https://heroku.com/verify
-https://dashboard.heroku.com/account/billing
+`https://heroku.com/verify`
+`https://dashboard.heroku.com/account/billing`
 之后再次运行安装添加件的命令，确认得到如下关键结果：
 ```
 Created sendgrid-adjacent-26146 as SENDGRID_PASSWORD, SENDGRID_USERNAME
@@ -1787,6 +1819,7 @@ Rails.application.configure do
     :address        => 'smtp.sendgrid.net',
     :port           => '587',
     :authentication => :plain,
+    # 以下两行代码中的用户名和密码不是占位符，ENV表明了他们是环境变量
     :user_name      => ENV['SENDGRID_USERNAME'],
     :password       => ENV['SENDGRID_PASSWORD'],
     :domain         => 'heroku.com',
@@ -1796,7 +1829,9 @@ Rails.application.configure do
 end
 ```
 
-收尾如下：
+## 收尾
+
+按照惯例，更新在线代码文档库（GitHub）并部署到生成（Heroku）：
 ```
 $ rails test
 $ git add -A
@@ -1808,18 +1843,22 @@ $ git push
 $ git push heroku
 $ heroku run rails db:migrate
 ```
+
 这里，如果在`git push heroku`部分提示找不到应用，可以用：
 ```
 $ git push heroku -a <your_heroku_app_name>
 ```
+
 或者绑定Heroku应用到`heroku`关键词，一劳永逸的解决这个问题：
 ```
 $ heroku git:remote -a <your_heroku_app_name>
 ```
 
-### 测试生产
+以上`<your_heroku_app_name>`是各位的Heroku应用名称，可以使用各位自己的账户登录Heroku查看。
 
-部署生成后再次测试，使用实际有效的邮箱，应该可以收到激活邮件，点击激活连接后跳转到用户简介页面，可以得到账户激活成功提示。我的环境里测试完成了，祝你好运。
+### 测试生产环境
+
+部署生成后再次通过部署的网站进行用户注册和激活测试，使用有效的邮箱，应该可以收到激活邮件，点击激活连接后跳转到用户简介页面，可以得到账户激活成功提示，祝各位好运。
 
 ## 第十二章 重置密码
 
