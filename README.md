@@ -2374,3 +2374,1356 @@ $ heroku run rails db:migrate
 ```
 
 打开Heroku的APP链接，验证已有用户的密码重置功能，祝你好运。
+
+# 第十三章 用户微博
+
+先处理一个小问题，从代码库克隆之前留下的程序到本地，尝试运行Rails服务器也会遇到关于数据库迁移的错误。解决办法并不复杂，重置数据库并重新生成测试数据即可：
+```
+$ rails db:migrate:reset
+$ rails db:seed
+```
+
+到目前为止，程序涉及了四个资源，分别是用户、会话、账户激活和密码重置，只有用户资源是基于`Active Record`模型，在数据库中也有相应的表格对应。本节创建另外一个类似资源，叫做用户微博，即与某个用户有关的短信息。
+
+首先创建微博数据模型，接着使用`has_many`和`belongs_to`方法关联到用户模型，最后创建必要的表单和片段来编辑和显示微博。下一节，作为本系列教程的最后一部分，将添加类似Twitter的关注功能，接收来自关注对象用户的微博更新。
+
+## 微博模型
+
+微博数据模型描述微博的基本特性，包含数据验证功能，并关联到用户模型。另外，也会添加相关测试，带有默认的排序功能，和自动销毁功能，以便在微博所有者用户账户删除同时删除所有所属的相关微博。创建本节代码分支：
+```
+$ git checkout -b user-microposts
+```
+
+### 基本模型
+
+微博数据模型以`microposts`为对象名称，包含以下属性和数据类型定义：
+```
+id         / integer  # 每条微博的唯一标识符
+content    / text     # 微博内容
+user_id    / integer  # 微博创建者用户账户ID
+create_at  / datetime # 微博创建时间戳
+updated_at / datetime # 微博修改时间戳 
+```
+
+对于微博属性`content`的数据类型定义用`text`而不用`string`基于以下考量。
+* 更好的表达了微博作为一个文本片段的自然属性，而不仅仅是一个字符串。
+* 视图文件中也会用`text area`即文本区域，而不是`text`字端承载。
+* 为应用提供更大的弹性，在日后为国际化等需求扩展微博容量时留有余地。
+* PostgreSQL推荐使用可变或无限容量的数据类型以保证更高运行效率*。
+* 如上，目前限制容量设为140个字符，即便可以用字符串类型承载也不用。
+
+使用Rails自带功能自动生成微博数据模型，注意指定的属性值和数据类型：
+```
+$ rails generate model Micropost content:text user:references
+```
+
+以上命令生成微博模型如下，带有`belongs_to :user`，因为生成命令中`user:references`的定义：
+`app/models/micropost.rb`
+```
+class Micropost < ApplicationRecord
+  belongs_to :user
+end
+```
+
+相应的数据库迁移文件和更新如下：
+`db/migrate/[timestamp]_create_microposts.rb`
+```
+class CreateMicroposts < ActiveRecord::Migration[5.0]
+  def change
+    # 在数据库中创建微博表格
+    create_table :microposts do |t|
+      # 使用微博属性值填充表格列，并建立外键关系
+      t.text :content
+      t.references :user, foreign_key: true
+      # 添加创建时间和更改时间两个属性和表格列
+      t.timestamps
+    end
+    # 以下语句需要更新添加，使用用户ID和创建时间为微博记录创建索引
+    add_index :microposts, [:user_id, :created_at]
+  end
+end
+```
+以上语句中的外键设置也同样由生成模型语句中的`user:references`部分自动添加。以上索引相关语句需要自行添加，以便按照用户和逆序创建时间列印微博。
+
+先使用迁移命令更新数据库，再在Rails控制台中测试新建的微博数据模型：
+```
+# 更新数据库
+$ rails db:migrate
+$ rails console
+# 查看新的微博对象所带有的属性
+> Micropost.new
+# 创建一个微博对象，同时通过返回的信息确认各属性值
+> post = Micropost.new(content:"a testing message", user_id:1)
+# 查看新建微博对象的用户属性和用户名子属性
+> post.user
+> post.user.name
+# 保存新建微博对象到数据库后，再次确认各属性值，特别是时间戳的更新
+> post.save
+> post
+```
+
+### 有效验证
+
+为验证微博对象有效，这里添加对所有者用户字端的存在和微博内容的存在与长度做验证，首先写出测试情景：
+`test/models/micropost_test.rb`
+```
+require 'test_helper'
+class MicropostTest < ActiveSupport::TestCase
+  # 初始化一个用户和一个微博用于测试
+  def setup
+    @user = users(:michael)
+    @micropost = Micropost.new(content: "Lorem ipsum", user_id: @user.id)
+  end
+  # 验证微博在正确创建时有效
+  test "should be valid" do
+    assert @micropost.valid?
+  end
+  # 测试用户ID不存在时微博无效
+  test "user id should be present" do
+    @micropost.user_id = nil
+    assert_not @micropost.valid?
+  end
+  # 测试微博内容为空时微博无效
+  test "content should be present" do
+    @micropost.content = "   "
+    assert_not @micropost.valid?
+  end
+  # 测试微博内容长度超过140字符时无效
+  test "content should be at most 140 characters" do
+    @micropost.content = "a" * 141
+    assert_not @micropost.valid?
+  end
+end
+```
+这里，初始化测试用微博实例时使用的是微博模型本身，实际上更理想的方式是使用`Active Record`的`关联`功能。
+
+对应测试场景，更新微博模型定义如下：
+`app/models/micropost.rb`
+```
+class Micropost < ApplicationRecord
+  belongs_to :user
+  # 验证用户ID存在
+  validates :user_id, presence: true
+  # 验证微博内容存在，内容长度最大为140
+  validates :content, presence: true, length: { maximum: 140 }
+end
+```
+
+运行测试，验证可以通过。
+
+### 用户与微博关联
+
+用户和微博的模型之间存在一对多的逻辑关系，即每个用户可以有多个微博，但每个微博只属于一个用户，这样的关系叫做关联，可以通过模型的定义实现。在设置了正确的关联关系后，系统会自动生成如下方法：
+```
+方法名称 / 作用
+micropost.user                / 返回与微博相关联的用户对象
+user.microposts               / 返回该用户创建的一系列微博
+user.microposts.create(arg)   / 创建一个与指定用户关联的微博
+user.microposts.create!(arg)  / 同上，失败时创建意外事件
+user.microposts.build(arg)    / 返回一个与指定用户关联的微博
+user.microposts.find_by(id:n) / 找到属于指定用户且ID为n的微博
+```
+
+更新用户和微博模型的操作，在之前的微博模型创建中已经完成了一半，即微博模型中的`belongs_to :user`语句，指定了多对一的从微博到用户的关联。这里手动更新用户模型，建立一对多的用户到微博关联：
+`app/models/user.rb`
+```
+class User < ApplicationRecord
+  has_many :microposts
+  ...
+end
+```
+
+在以上的关联设置完成后，可以更新微博的模型测试：
+`test/models/micropost_test.rb`
+```
+require 'test_helper'
+class MicropostTest < ActiveSupport::TestCase
+  def setup
+    @user = users(:michael)
+    # 更新以下语句，使用更理想的方式创建测试用微博对象
+    @micropost = @user.microposts.build(content: "Lorem ipsum")
+  end
+  ...
+end
+```
+
+在Rails控制台测试到目前为止的模型关联设置：
+```
+$ rails console
+# 使用数据库中的第一个用户创建用户对象
+> user = User.find(1)
+# 使用该用户关联微博的创建方法生成一个微博对象
+> post = user.microposts.create(content: "Lorem ipsum")
+# 使用该用户关联微博的查找方法查找到微博
+> user.microposts.find(micropost.id)
+# 确认用户对象和微博对象关联的用户是同一个
+> user == micropost.user
+=> true
+# 确认用户关联微博的第一个与该微博对象为同一个
+> user.microposts.first == micropost
+```
+以上测试验证了用户和微博模型之间的关联方法有效。
+
+### 关联优化
+
+这一部分处理用户微博的列印顺序，并配置微博依赖于用户以便在用户账户删除时自动删除该账户的所属微博。
+
+返回某个用户全部微博的方法`user.microposts`方法不保证返回微博的顺序，但根据其他博客应用的惯例，一般会把最新的微博放在最前列，以便访客可以看到最新的更新。依旧按照TDD流程，先写出测试模块，准备测试用数据：
+`test/fixtures/microposts.yml`
+```
+orange:
+  content: "I just ate an orange!"
+  created_at: <%= 10.minutes.ago %>
+
+tau_manifesto:
+  content: "Check out the @tauday site by @mhartl: http://tauday.com"
+  created_at: <%= 3.years.ago %>
+
+cat_video:
+  content: "Sad cats are sad: http://youtu.be/PKffm2uI4dk"
+  created_at: <%= 2.hours.ago %>
+
+most_recent:
+  content: "Writing a short test"
+  created_at: <%= Time.zone.now %>
+```
+
+以上测试数据准备了四个发布于不同时间的微博对象。接着，更新微博模型测试定义：
+`test/models/micropost_test.rb`
+```
+require 'test_helper'
+class MicropostTest < ActiveSupport::TestCase
+  ...
+  test "order should be most recent first" do
+    assert_equal microposts(:most_recent), Micropost.first
+  end
+end
+```
+
+现在运行测试会得到失败结果哦，因为微博模型中没有定义返回微博的顺序，为此更新微博模型：
+`app/models/micropost.rb`
+```
+class Micropost < ApplicationRecord
+  belongs_to :user
+  # 添加以下默认范围定义，按创建时间的逆序排列
+  default_scope -> { order(created_at: :desc) }
+  validates :user_id, presence: true
+  validates :content, presence: true, length: { maximum: 140 }
+end
+```
+
+系统默认的时间表示方法是连续增长的数字，值越大表示越靠近当前时间。而默认的排序为递增，也就是越靠近当前的时间越排序在后面或下方。我们要方便的查看最新的微博，也就是希望越靠近当前的时间越排序在前面或上方，故加入逆序参数`desc`。
+
+现在运行测试，确认可以通过。下一步，通过在用户模型中添加与微博的依赖关系，让系统在删除用户的同时删除其拥有的所有微博。更新用户模型：
+`app/models/user.rb`
+```
+class User < ApplicationRecord
+  # 更新以下一条语句，为删除操作建立依赖关系
+  has_many :microposts, dependent: :destroy
+  ...
+end
+```
+
+为验证用户模型的更新有效，更新用户模型测试定义：
+`test/models/user_test.rb`
+```
+require 'test_helper'
+class UserTest < ActiveSupport::TestCase
+  def setup
+    @user = User.new(name: "Example User", email: "user@example.com",
+                     password: "foobar", password_confirmation: "foobar")
+  end
+  ...
+  # 保存测试用户，创建一条微博，删除用户并确认微博数量也减少一个
+  test "associated microposts should be destroyed" do
+    @user.save
+    @user.microposts.create!(content: "Lorem ipsum")
+    assert_difference 'Micropost.count', -1 do
+      @user.destroy
+    end
+  end
+end
+```
+
+运行测试，确认可以通过。
+
+## 列印微博
+
+为了简化程序的设计，微博将列印在用户简介页面`show.html.erb`，同时显示该用户总共拥有的微博数量。
+
+### 列印微博
+
+列印微博使用的方法与列印用户类似。先重置数据库，创建微博的控制器和视图文件：
+```
+$ rails db:migrate:reset
+$ rails db:seed
+$ rails generate controller Microposts
+```
+
+这里先创建用于显示每条微博的代码片段：
+`app/views/microposts/_micropost.html.erb`
+```
+<li id="micropost-<%= micropost.id %>">
+  <%= link_to gravatar_for(micropost.user, size: 50), micropost.user %>
+  <span class="user"><%= link_to micropost.user.name, micropost.user %></span>
+  <span class="content"><%= micropost.content %></span>
+  <span class="timestamp">
+    Posted <%= time_ago_in_words(micropost.created_at) %> ago.
+  </span>
+</li>
+```
+注意以上代码中使用了`time_ago_in_words`的帮助方法，会自动根据代入的参数计算到当前时间的偏移，并以友好的可读方式显示。每个列表对象带有一个为定义CSS格式而准备的唯一ID，以便在未来为某个单独微博记录添加格式定义提供方便。
+
+为了在用户的简介视图中显示微博对象，更新用户控制器以引入用户拥有的微博数组变量：
+`app/controllers/users_controller.rb`
+```
+class UsersController < ApplicationController
+  ...
+  def show
+    @user = User.find(params[:id])
+    # 添加以下一行代码，引入用户所拥有的微博数组变量
+    @microposts = @user.microposts.paginate(page: params[:page])
+    redirect_to root_url and return unless @user.activated?
+  end
+  ...
+end
+```
+
+更新用户简介页面：
+`app/views/users/show.html.erb`
+```
+<% provide(:title, @user.name) %>
+<div class="row">
+  <aside class="col-md-4">
+    <section class="user_info">
+      <h1>
+        <%= gravatar_for @user %>
+        <%= @user.name %>
+      </h1>
+    </section>
+  </aside>
+  # 更新如下代码段
+  <div class="col-md-8">
+    <% if @user.microposts.any? %>
+      <h3>Microposts (<%= @user.microposts.count %>)</h3>
+      <ol class="microposts">
+        <%= render @microposts %>
+      </ol>
+      <%= will_paginate @microposts %>
+    <% end %>
+  </div>
+</div>
+```
+
+以上用户视图更新的代码片段比较有趣，这里逐一解释如下：
+* <% if @user.microposts.any? %> 检查当前用户是否拥有微博，如果没有则不显示下面的部分
+* <%= @user.microposts.count %> 不会显示当前页面的微博数量，而是该用户的微博总数
+* <ol class="microposts"> 创建的是带顺序的列表，因为我们希望列印的微博带有顺序
+* <%= render @microposts %> 调用之前创建的用于显示每条微博的代码片段，以逐条列印微博
+* <%= will_paginate @microposts %> 因为在用户视图中分页微博，需要指明微博数组对象
+
+### 微博样本
+
+为测试微博列印效果，生成样本微博的方式与样本用户类似，更新数据库种子文件定义如下：
+`db/seeds.rb`
+```
+...
+users = User.order(:created_at).take(6)
+50.times do
+  content = Faker::Lorem.sentence(5)
+  users.each { |user| user.microposts.create!(content: content) }
+end
+```
+
+重置数据库并再次生成种子：
+```
+$ rails db:migrate:reset
+$ rails db:seed
+```
+
+此时重起Rails服务器并登录，可以看到列印微博格式有待改善，更新自定义格式文件：
+`app/assets/stylesheets/custom.scss`
+```
+...
+/* 微博自定义格式 */
+
+.microposts {
+  list-style: none;
+  padding: 0;
+  li {
+    padding: 10px 0;
+    border-top: 1px solid #e8e8e8;
+  }
+  .user {
+    margin-top: 5em;
+    padding-top: 0;
+  }
+  .content {
+    display: block;
+    margin-left: 60px;
+    img {
+      display: block;
+      padding: 5px 0;
+    }
+  }
+  .timestamp {
+    color: $gray-light;
+    display: block;
+    margin-left: 60px;
+  }
+  .gravatar {
+    float: left;
+    margin-right: 10px;
+    margin-top: 5px;
+  }
+}
+
+aside {
+  textarea {
+    height: 100px;
+    margin-bottom: 5px;
+  }
+}
+
+span.picture {
+  margin-top: 10px;
+  input {
+    border: 0;
+  }
+}
+```
+保存以上更改，刷新用户微博列印视图，确认格式已经得到改善。
+
+拾遗如下：
+```
+$ rails console
+# 转换成数组并提取
+> (1..10).to_a.take(6)
+=> [1, 2, 3, 4, 5, 6]
+# 不做转换直接提取也会默认转换
+> (1..10).take(6)
+=> [1, 2, 3, 4, 5, 6]
+# 得到不同的虚拟的各种样本
+> Faker::University.name
+=> "The Hilll"
+> Faker::PhoneNumber.phone_number
+=> "353-107-3379 x4100"
+> Faker::PhoneNumber.cell_phone
+=> "(557) 733-3715"
+> Faker::Hipster.sentence
+=> "Helvetica chambray small batch authentic viral."
+> Faker::ChuckNorris.fact
+=> "Chuck Norris can instantiate an abstract class."
+```
+https://github.com/faker-ruby/faker/blob/master/doc/default/university.md
+https://github.com/faker-ruby/faker/blob/master/doc/default/phone_number.md
+https://github.com/faker-ruby/faker/blob/master/doc/default/hipster.md
+https://github.com/faker-ruby/faker/blob/master/doc/default/chuck_norris.md
+
+### 简介页面测试
+
+在更新了简介页面的设计后，这里建立相关集成测试如下：
+```
+$ rails generate integration_test users_profile
+```
+
+更新微博的测试用样本信息：
+`test/fixtures/microposts.yml`
+```
+orange:
+  content: "I just ate an orange!"
+  created_at: <%= 10.minutes.ago %>
+  # 添加以下用户信息以便Rails自动建立与用户样本的关联
+  user: michael
+
+tau_manifesto:
+  content: "Check out the @tauday site by @mhartl: http://tauday.com"
+  created_at: <%= 3.years.ago %>
+  # 如上
+  user: michael
+
+cat_video:
+  content: "Sad cats are sad: http://youtu.be/PKffm2uI4dk"
+  created_at: <%= 2.hours.ago %>
+  # 如上
+  user: michael
+
+most_recent:
+  content: "Writing a short test"
+  created_at: <%= Time.zone.now %>
+  # 如上
+  user: michael
+
+# 使用嵌入式Ruby命令自动生成大量测试用微博样本
+<% 30.times do |n| %>
+micropost_<%= n %>:
+  content: <%= Faker::Lorem.sentence(5) %>
+  created_at: <%= 42.days.ago %>
+  # 如上
+  user: michael
+<% end %>
+```
+
+更新用户简介的集成测试，检查页面标题和用户名、头像、微博数量和分页：
+`test/integration/users_profile_test.rb`
+```
+require 'test_helper'
+class UsersProfileTest < ActionDispatch::IntegrationTest
+  # 导入如下模块，以便使用full_title帮助方法
+  include ApplicationHelper
+  def setup
+    @user = users(:michael)
+  end
+  test "profile display" do
+    # 导航到用户简介页面
+    get user_path(@user)
+    # 确认页面使用的模版正确
+    assert_template 'users/show'
+    # 确认页面标题为用户名
+    assert_select 'title', full_title(@user.name)
+    # 确认页面中有H1对象，内容为用户名
+    assert_select 'h1', text: @user.name
+    # 确认在H1对象中哟偶一个img对象，CSS类定义为gravatar
+    assert_select 'h1>img.gravatar'
+    # 将微博数量值转换为字符，确认在页面显示源码中存在
+    assert_match @user.microposts.count.to_s, response.body
+    # 确认页面中存在且只存在一个div的分页对象
+    assert_select 'div.pagination'
+    # 确认分页页面1中的每个微博的内容都在页面显示源码中可以找到
+    @user.microposts.paginate(page: 1).each do |micropost|
+      assert_match micropost.content, response.body
+    end
+  end
+end
+```
+
+现在运行测试，确认可以通过。
+
+## 创建和删除微博
+
+微博资源的接口在用户简介和网站根页面，因此我们不需要在微博的控制器中添加`new`和`edit`动作，只需要`create`和`destroy`动作即可。
+
+更新路由设置：
+`config/routes.rb`
+```
+Rails.application.routes.draw do
+  ...
+  # 只需要在其他路由设置的最后添加如下一条语句
+  resources :microposts, only: [:create, :destroy]
+end
+```
+
+以上路由设置新增的URL路径如下：
+```
+HTTP request / URL          / Action  / Named route
+POST         / microposts   / create  / microposts_path
+DELETE       / microposts/1 / destroy / micropost_path(micropost)
+```
+
+相比由Rails命令自动生成的配置而言，以上手动设置虽然更简单但却也需要对Rails技术架构更深入的理解。
+
+### 访问控制
+
+因为只有微博的所有者才可以使用`create`和`destroy`动作，微博控制器中需要为这两个方法设置用户登录前提条件。对没有登录的用户，尝试使用以上两个方法的结果应该是微博总数不变，页面跳转到登录页，因此先更新微博控制器测试：
+`test/controllers/microposts_controller_test.rb`
+```
+require 'test_helper'
+class MicropostsControllerTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @micropost = microposts(:orange)
+  end
+
+  test "should redirect create when not logged in" do
+    assert_no_difference 'Micropost.count' do
+      post microposts_path, params: { micropost: { content: "Lorem ipsum" } }
+    end
+    assert_redirected_to login_url
+  end
+
+  test "should redirect destroy when not logged in" do
+    assert_no_difference 'Micropost.count' do
+      delete micropost_path(@micropost)
+    end
+    assert_redirected_to login_url
+  end
+end
+```
+
+为通过以上测试，需要先将确认用户已登录的`logged_in_user`方法从用户控制器中迁移到应用控制器中，以便微博控制器也可以设置该方法为前提条件。应用控制器会被所有其他控制器继承，其中的方法也可用于其他控制器：
+`app/controllers/application_controller.rb`
+```
+class ApplicationController < ActionController::Base
+  protect_from_forgery with: :exception
+  include SessionsHelper
+
+  private
+
+    # Confirms a logged-in user.
+    def logged_in_user
+      unless logged_in?
+        store_location
+        flash[:danger] = "Please log in."
+        redirect_to login_url
+      end
+    end
+end
+```
+
+现更新微博控制器，增加对创建和销毁微博方法的登录限制条件：
+`app/controllers/microposts_controller.rb`
+```
+class MicropostsController < ApplicationController
+  # 添加前提条件，只允许已登录用户访问创建和删除微博的方法
+  before_action :logged_in_user, only: [:create, :destroy]
+
+  def create
+  end
+
+  def destroy
+  end
+end
+```
+
+运行测试，确认到目前为止的代码没有问题。
+
+### 创建微博
+
+之前在用户注册功能中曾使用HTML表单，经过HTTP的POST请求和用户控制器的`create`动作提交。创建微博的实施方式与之类似，只是不必在一个独立的`/microposts/new`页面，而是直接在根页面`/`上操作。
+
+到目前为止，根页面上只有一个注册按钮，对已经注册和登录的用户没有意义。这里将更新根页面设计，根据访客的登录状态提供不同的注册或发微博的功能页面。首先更新微博控制器的`create`动作：
+`app/controllers/microposts_controller.rb`
+```
+class MicropostsController < ApplicationController
+  before_action :logged_in_user, only: [:create, :destroy]
+  # 需要更新的仅是`create`动作
+  def create
+    @micropost = current_user.microposts.build(micropost_params)
+    if @micropost.save
+      flash[:success] = "Micropost created!"
+      redirect_to root_url
+    else
+      render 'static_pages/home'
+    end
+  end
+
+  def destroy
+  end
+
+  private
+    # 这里限制创建微博的动作，只允许修改微博内容
+    def micropost_params
+      params.require(:micropost).permit(:content)
+    end
+end
+```
+
+更新根页面静态设计代码：
+`app/views/static_pages/home.html.erb`
+```
+<% if logged_in? %>
+  # 如果用户已经登录则显示以下代码定义的内容
+  <div class="row">
+    <aside class="col-md-4">
+      # 在一个页面章节显示用户信息
+      <section class="user_info">
+        <%= render 'shared/user_info' %>
+      </section>
+      # 在另一个页面章节显示微博表单
+      <section class="micropost_form">
+        <%= render 'shared/micropost_form' %>
+      </section>
+    </aside>
+  </div>
+<% else %>
+  # 如果用户没有登录则显示原来的如下内容
+  <div class="center jumbotron">
+    <h1>Welcome to the Sample App</h1>
+
+    <h2>
+      This is the home page for the
+      <a href="https://www.railstutorial.org/">Ruby on Rails Tutorial</a>
+      sample application.
+    </h2>
+
+    <%= link_to "Sign up now!", signup_path, class: "btn btn-lg btn-primary" %>
+  </div>
+
+  <%= link_to image_tag("rails.png", alt: "Rails logo"),
+              'http://rubyonrails.org/' %>
+<% end %>
+```
+
+以上更新涉及到`user_info`代码块，这里定义如下：
+`app/views/shared/_user_info.html.erb`
+```
+# 创建一个到当前已登录用户简介页面的头像链接
+<%= link_to gravatar_for(current_user, size: 50), current_user %>
+# 以当前用户名为内容的一级标题
+<h1><%= current_user.name %></h1>
+# 链接到当前已登录用户简介页面的链接
+<span><%= link_to "view my profile", current_user %></span>
+# 显示当前已登录用户的微博数量，自动根据数量设置复数形式
+<span><%= pluralize(current_user.microposts.count, "micropost") %></span>
+```
+
+另一个微博表单代码块定义如下：
+`app/views/shared/_micropost_form.html.erb`
+```
+# 为微博对象创建表单
+<%= form_for(@micropost) do |f| %>
+  <%= render 'shared/error_messages', object: f.object %>
+  # 在表单的文本区域组件处生成微博对象的内容属性
+  <div class="field">
+    <%= f.text_area :content, placeholder: "Compose new micropost..." %>
+  </div>
+  # 使用POST方法提交表单，使用预定义的CSS类套用格式
+  <%= f.submit "Post", class: "btn btn-primary" %>
+<% end %>
+```
+
+以上微博表单代码块中涉及的微博对象需要在静态页面控制器中创建：
+`app/controllers/static_pages_controller.rb`
+```
+class StaticPagesController < ApplicationController
+  def home
+    # 更新如下一行代码，如果用户已登录则为之创建空的微博对象
+    @micropost = current_user.microposts.build if logged_in?
+  end
+  ...
+end
+```
+
+另外，之前生成错误信息的代码块只适用于用户，这里需要更新使其通用于用户和微博对象：
+`app/views/shared/_error_messages.html.erb`
+```
+# 更新以下一行，原来为`@user.errors.any?`
+<% if object.errors.any? %>
+  <div id="error_explanation">
+    <div class="alert alert-danger">
+      # 更新以下一行，原来为`@user.errors.count`
+      The form contains <%= pluralize(object.errors.count, "error") %>.
+    </div>
+    <ul>
+    # 更新以下一行，原来为`@user.errors.full_messages.each`
+    <% object.errors.full_messages.each do |msg| %>
+      <li><%= msg %></li>
+    <% end %>
+    </ul>
+  </div>
+<% end %>
+```
+
+注意到原来的`@user`在这里替换为`object`，因此重用该错误信息模块的地方也需要更新。
+
+更新用户表单的通用表单视图：
+```app/views/users/_form.html.erb`
+```
+<%= form_for(@user) do |f| %>
+  <%= render 'shared/error_messages', object: f.object %>
+  ...
+<% end %>
+```
+
+更新重置密码的编辑视图：
+`app/views/password_resets/edit.html.erb`
+```
+<% provide(:title, 'Reset password') %>
+<h1>Password reset</h1>
+<div class="row">
+  <div class="col-md-6 col-md-offset-3">
+    <%= form_for(@user, url: password_reset_path(params[:id])) do |f| %>
+      # 更新如下一行代码，将通用表单对象代入错误信息代码块
+      <%= render 'shared/error_messages', object: f.object %>
+      ...
+    <% end %>
+  </div>
+</div>
+```
+
+运行测试，确保这部分的更改有效。
+
+一点优化，将根页面中用户登录与否两种情况下的代码拆分到代码块：
+`app/views/static_pages/home.html.erb`
+```
+<% if logged_in? %>
+  <%= render 'shared/logged_in' %>
+<% else %>
+  <%= render 'shared/not_logged_in' %>
+<% end %>
+```
+
+创建代码块文件：
+`app/views/shared/_logged_in.html.erb`
+```
+  <div class="row">
+    <aside class="col-md-4">
+      <section class="user_info">
+        <%= render 'shared/user_info' %>
+      </section>
+      <section class="micropost_form">
+        <%= render 'shared/micropost_form' %>
+      </section>
+    </aside>
+  </div>
+```
+
+`app/views/shared/_not_logged_in.html.erb`
+```
+  <div class="center jumbotron">
+    <h1>Welcome to the Sample App</h1>
+    <h2>
+      This is the home page for the
+      <a href="https://www.railstutorial.org/">Ruby on Rails Tutorial</a>
+      sample application.
+    </h2>
+    <%= link_to "Sign up now!", signup_path, class: "btn btn-lg btn-primary" %>
+  </div>
+
+  <%= link_to image_tag("rails.png", alt: "Rails logo"), 
+    'http://rubyonrails.org/' %>
+```
+
+以上操作将抽取出来的代码块放到`shared`文件夹是有原因的，答案在下一个小节的末尾。
+
+### 更新源模型
+
+目前主页上的微博表单已经工作正常，但除非用户自己跳转到简介页面去查看，否则无法确认更新。这里创建一个更新源的模型，让用户订阅或关注自己。因为每个用户都会至少关注自己，所以在用户模型中创建更新源动作：
+`app/models/user.rb
+```
+class User < ApplicationRecord
+  ...
+  # 更新添加一下一个更新源动作
+  def feed
+    Micropost.where("user_id = ?", id)
+  end
+
+    private
+    ...
+end
+```
+
+对于实际上添加的以上仅一行代码，这里还是有必要说明如下：
+* 以上代码实际上可以简化成`microposts`，使用现在的样子是为了以后添加高级功能时更新方便。
+* 在`where`语句中使用问号可以将读入的参数做安全逃逸处理，避免SQL脚本注入型攻击的风险。
+
+更新静态页面控制器，创建`@feed_items`实例来引用用户从更新源返回的微博：
+`app/controllers/static_pages_controller.rb`
+```
+class StaticPagesController < ApplicationController
+  def home
+    # 将原本在第一条语句末尾的登录条件判定语句移到代码块外层
+    if logged_in?
+      @micropost  = current_user.microposts.build
+      # 添加如下一行语句，从当前用户拿到微博更新并分页
+      @feed_items = current_user.feed.paginate(page: params[:page])
+    end
+  end
+  ...
+end
+```
+
+创建更新源代码块，引用之前创建的`@feed_items`实例：
+`app/views/shared/_feed.html.erb`
+```
+<% if @feed_items.any? %>
+  # 列印微博并分页
+  <ol class="microposts">
+    <%= render @feed_items %></ol>
+  <%= will_paginate @feed_items %>
+<% end %>
+```
+
+以上更新中`render @feed_items`的操作对象是一系列微博，每个都指向如下代码块：
+`app/views/microposts/_micropost.html.erb`
+```
+<li id="micropost-<%= micropost.id %>">
+  <%= link_to gravatar_for(micropost.user, size: 50), micropost.user %>
+  <span class="user"><%= link_to micropost.user.name, micropost.user %></span>
+  <span class="content"><%= micropost.content %></span>
+  <span class="timestamp">
+    Posted <%= time_ago_in_words(micropost.created_at) %> ago.
+  </span>
+</li>
+```
+这是因为Rails知道每个微博都属于`Micropost`类，因此会自动在相应视图目录中寻找相应名字的代码块。
+
+更新根页面视图对以登录用户的页面定制，使用之前创建的更新源代码块：
+`app/views/shared/_logged_in.html.erb`
+```
+  <div class="row">
+    <aside class="col-md-4">
+      <section class="user_info">
+        <%= render 'shared/user_info' %>
+      </section>
+      <section class="micropost_form">
+        <%= render 'shared/micropost_form' %>
+      </section>
+    </aside>
+    # 添加如下代码块，列印用户微博
+    <div class="col-md-8">
+      <h3>Micropost Feed</h3>
+      <%= render 'shared/feed' %>
+    </div>
+  </div>
+```
+
+到这里，创建正常的微博没有问题，但发生如创建空微博的错误时，根页面依旧等待返回一个微博数组，因此需要更新微博控制器返回一个空白数组：
+`app/controllers/microposts_controller.rb`
+```
+class MicropostsController < ApplicationController
+  before_action :logged_in_user, only: [:create, :destroy]
+  def create
+    @micropost = current_user.microposts.build(micropost_params)
+    if @micropost.save
+      flash[:success] = "Micropost created!"
+      redirect_to root_url
+    else
+      # 在这里添加如下一行代码
+      @feed_items = []
+      render 'static_pages/home'
+    end
+  end
+
+  def destroy
+  end
+
+  private
+
+    def micropost_params
+      params.require(:micropost).permit(:content)
+    end
+end
+```
+
+如果之前你也有做过对根页面的代码优化，把已登录和未登录用户的页面抽取到独立代码块，那么发送空白微博时可能发生找不到模版的错误。从后台可以看到错误提示，即找不到`microposts/_logged_in`文件定义，这就是要把之前抽取出来的页面代码块放到`shared`文件夹中的原因。
+
+另外，发送空的微博依然会导致用户微博列印为空白，这也是意料之中的事情，因为为避免程序崩溃在发布失败时我们自定义返回一个空的微博数组。在Rails服务器后台查看创建微博使用的带`insert`命令的SQL脚本，可以得到如下信息：
+```
+SQL (2.3ms)  INSERT INTO "microposts" ("content", "user_id", "created_at", "updated_at") VALUES (?, ?, ?, ?)  [["content", "something happens"], ["user_id", 1], ["created_at", "2019-08-21 11:32:52.973184"], ["updated_at", "2019-08-21 11:32:52.973184"]]
+```
+
+最后，通过如下Rails控制台命令可以确认多种抽取用户微博的方式`Micropost.where("user_id = ?", user.id)`， user.microposts`和`user.feed`等，结果是相同的：
+```
+$ rails console
+> user = User.find(1)
+> Micropost.where("user_id = ?", user.id) == user.microposts
+=> true
+> Micropost.where("user_id = ?", user.id) == user.feed
+=> true
+> user.microposts == user.feed
+=> true
+```
+
+### 删除微博
+
+在微博资源中添加删除功能，与用户的删除功能类似，通过一个链接实现，只对微博的创建者可见和有效。
+
+这里首先更新微博代码块：
+`app/views/microposts/_micropost.html.erb`
+```
+<li id="<%= micropost.id %>">
+  <%= link_to gravatar_for(micropost.user, size: 50), micropost.user %>
+  <span class="user"><%= link_to micropost.user.name, micropost.user %></span>
+  <span class="content"><%= micropost.content %></span>
+  <span class="timestamp">
+    Posted <%= time_ago_in_words(micropost.created_at) %> ago.
+    # 判断当前登录用户是否为微博所有者，如是则显示一个链接
+    <% if current_user?(micropost.user) %>
+      # 链接指向微博模型的`delete`动作，使用HTTP的`delete`方法
+      <%= link_to "delete", micropost, method: :delete,
+                                       data: { confirm: "You sure?" } %>
+    <% end %>
+  </span>
+</li>
+```
+
+更新微博控制器，增加对当前用户的判断和删除动作的更新：
+`app/controllers/microposts_controller.rb`
+```
+class MicropostsController < ApplicationController
+  before_action :logged_in_user, only: [:create, :destroy]
+  # 添加如下一行代码，限制只有当前用户可以调用删除动作
+  before_action :correct_user,   only: :destroy
+  ...
+  # 增加如下代码块，删除指定的微博，闪信删除成功的提示
+  def destroy
+    @micropost.destroy
+    flash[:success] = "Micropost deleted"
+    # 切换以下两行代码的注释和非注释状态，确认其作用相同
+    redirect_to request.referrer || root_url
+    # redirect_back(fallback_location: root_url)
+  end
+
+  private
+
+    def micropost_params
+      params.require(:micropost).permit(:content)
+    end
+    # 添加如下代码块，增加判断当前用户登录状态的私有方法
+    def correct_user
+      # 用`micropost`变量返回指定ID对应的微博，在返回值有效时重定向到根目录
+      @micropost = current_user.microposts.find_by(id: params[:id])
+      redirect_to root_url if @micropost.nil?
+    end
+end
+```
+
+以上代码中唯一需要解释的是`redirect_to request.referrer || root_url`:
+* `request.referrer`指向删除动作之前的链接，目前可以是主页或用户简介页面。
+* 如果以上链接不存在，即返回值为`nil`时，跳转到网站根页面的`root_url`地址。
+* 以上代码与`redirect_back(fallback_location: root_url)`作用相同。
+
+是时候去以已登录用户身份到主页和用户简介页面测试删除微博了，可以都测试一下。在Rails服务器后段可以看到类似如下信息，发起删除操作，实施删除操作，重定向到根页面：
+```
+Started DELETE "/microposts/289" for 127.0.0.1 at 2019-08-22 16:52:21 +0800
+...
+  SQL (0.7ms)  DELETE FROM "microposts" WHERE "microposts"."id" = ?  [["id", 289]]
+Redirected to http://localhost:3000/
+```
+
+### 微博测试
+
+这里将测试微博控制器和用户授权，并通过集成测试收尾。更新微博的测试样本文件定义：
+`test/fixtures/microposts.yml`
+```
+...
+ants:
+  content: "Oh, is that what you want? Because that's how you get ants!"
+  created_at: <%= 2.years.ago %>
+  user: archer
+
+zone:
+  content: "Danger zone!"
+  created_at: <%= 3.days.ago %>
+  user: archer
+
+tone:
+  content: "I'm sorry. Your words made sense, but your sarcastic tone did not."
+  created_at: <%= 10.minutes.ago %>
+  user: lana
+
+van:
+  content: "Dude, this van's, like, rolling probable cause."
+  created_at: <%= 4.hours.ago %>
+  user: lana
+```
+
+更新微博控制器测试，确认用户不可以删除其他用户的微博：
+`test/controllers/microposts_controller_test.rb`
+```
+  # 添加如下测试场景
+  test "should redirect destroy for wrong micropost" do
+    log_in_as(users(:michael))
+    micropost = microposts(:ants)
+    assert_no_difference 'Micropost.count' do
+      delete micropost_path(micropost)
+    end
+    assert_redirected_to root_url
+  end
+```
+
+新增集成测试包括，以某个用户身份登录，确认微博分页，测试发布有效和无效微博，删除微博，访问其他用户微博并确认没有删除操作链接。首先，生成测试文件：
+```
+$ rails generate integration_test microposts_interface
+```
+
+更新测试场景定义如下：
+`test/integration/microposts_interface_test.rb`
+```
+require 'test_helper'
+class MicropostsInterfaceTest < ActionDispatch::IntegrationTest
+  # 准备一个用户
+  def setup
+    @user = users(:michael)
+  end
+  # 测试微博接口
+  test "micropost interface" do
+    # 以测试用户登录，导航到根页面，确认页面中存在分页模块
+    log_in_as(@user)
+    get root_path
+    assert_select 'div.pagination'
+    # 提交无效的空白内容微博，确认提交失败，即提交后微博总数不变，有错误信息
+    assert_no_difference 'Micropost.count' do
+      post microposts_path, params: { micropost: { content: "" } }
+    end
+    assert_select 'div#error_explanation'
+    # 提交有效的微博，确认跳转到根页面，跟随跳转，确认页面中有刚发布的内容
+    content = "This micropost really ties the room together"
+    assert_difference 'Micropost.count', 1 do
+      post microposts_path, params: { micropost: { content: content } }
+    end
+    assert_redirected_to root_url
+    follow_redirect!
+    assert_match content, response.body
+    # 测试删除微博，确认页面中有删除链接，选中第一个微博，确认删除操作有效
+    assert_select 'a', text: 'delete'
+    first_micropost = @user.microposts.paginate(page: 1).first
+    assert_difference 'Micropost.count', -1 do
+      delete micropost_path(first_micropost)
+    end
+    # 确认访问其他用户页面时，页面中没有删除链接
+    get user_path(users(:archer))
+    assert_select 'a', text: 'delete', count: 0
+  end
+  # 以下测试针对侧边栏中微博数量
+  test "micropost sidebar count" do
+    # 登录并导航到根页面，确认页面中包含微博数量的文字
+    log_in_as(@user)
+    get root_path
+    assert_match "#{Micropost.count} microposts", response.body
+    # 登录另一个用户并导航到根页面，确认页面中显示微博数量为零
+    other_user = users(:malory)
+    log_in_as(other_user)
+    get root_path
+    assert_match "0 microposts", response.body
+    other_user.microposts.create!(content: "A micropost")
+    get root_path
+    assert_match FILL_IN, response.body
+  end
+end
+```
+
+## 微博图像
+
+在发布文字的基础上，这里再添加上传图像的功能，涉及到两个主要组件，上传图像的表单和图像微博本身。
+
+### 基本图像
+
+首先，更新GemFile添加必要的依赖库，注意生产环境还需要额外的代码库：
+```
+source 'https://rubygems.org'
+...
+gem 'carrierwave',             '1.2.2'
+gem 'mini_magick',             '4.7.0'
+...
+group :production do
+  ...
+  gem 'fog', '1.42'
+end
+```
+
+安装必要的代码库，并生成上传图片的模块，为微博模型增加图片属性：
+```
+$ bundle install
+$ rails generate uploader Picture
+$ rails generate migration add_picture_to_microposts picture:string
+$ rails db:migrate
+```
+
+更新微博模型，使用`mount_uploader`方法连接图像和模型，两个参数指向属性名称和图像上传模块：
+`app/models/micropost.rb`
+```
+class Micropost < ApplicationRecord
+  belongs_to :user
+  default_scope -> { order(created_at: :desc) }
+  # 微博模型中只需要更新添加以下一行代码
+  mount_uploader :picture, PictureUploader
+  validates :user_id, presence: true
+  validates :content, presence: true, length: { maximum: 140 }
+end
+```
+
+到这里，如果运行测试会出现错误，然而其实并没有实际的错误，只需要退出Rails服务器，重启命令行终端，再次测试就应该可以通过。
+
+更新视图的微博表单代码块，增加图像上传功能：
+`app/views/shared/_micropost_form.html.erb`
+```
+<%= form_for(@micropost) do |f| %>
+  <%= render 'shared/error_messages', object: f.object %>
+  <div class="field">
+    <%= f.text_area :content, placeholder: "Compose new micropost..." %>
+  </div>
+  <%= f.submit "Post", class: "btn btn-primary" %>
+  # 需要更新添加以下三行代码
+  <span class="picture">
+    <%= f.file_field :picture %>
+  </span>
+<% end %>
+```
+
+更新微博控制器，允许通过网页修改文本和图像内容的微博参数：
+`app/controllers/microposts_controller.rb`
+```
+  ...
+  private
+    def micropost_params
+      # 这里只需要更新如下一行代码
+      params.require(:micropost).permit(:content, :picture)
+    end
+    ...
+end
+```
+
+更新视图的微博代码块，使用帮助方法`image_tag`生成图像：
+`app/views/microposts/_micropost.html.erb`
+```
+<li id="micropost-<%= micropost.id %>">
+  <%= link_to gravatar_for(micropost.user, size: 50), micropost.user %>
+  <span class="user"><%= link_to micropost.user.name, micropost.user %></span>
+  <span class="content">
+    <%= micropost.content %>
+    # 这里需要更新追加如下一行代码，用来显示图片，图片不存在时不生成图像类型网页组件
+    <%= image_tag micropost.picture.url if micropost.picture? %>
+  </span>
+  <span class="timestamp">
+    Posted <%= time_ago_in_words(micropost.created_at) %> ago.
+    <% if current_user?(micropost.user) %>
+      <%= link_to "delete", micropost, method: :delete,
+                                       data: { confirm: "You sure?" } %>
+    <% end %>
+  </span>
+</li>
+```
+
+更新微博接口集成测试，添加对图像上传模块和功能的测试：
+`test/integration/microposts_interface_test.rb`
+```
+    ...
+    assert_select 'div.pagination'
+    # 添加如下一行代码
+    assert_select 'input[type=file]'
+    ...
+    content = "This micropost really ties the room together"
+    # 更新如下代码部分
+    picture = fixture_file_upload('test/fixtures/rails.png', 'image/png')
+    assert_difference 'Micropost.count', 1 do
+      post microposts_path, params: { micropost:
+                                      { content: content,
+                                        picture: picture } }
+    end
+    ...
+```
+
+运行测试前，拷贝测试用图片到指定位置：
+```
+$ cp app/assets/images/rails.png test/fixtures/
+```
+
+现在可以运行测试，并运行Rails服务器尝试上传图片。
+
+### 图像验证
+
+以上建立的图像上传功能对上传文件的大小和格式没有验证，用户可以上传任意大小和格式的文件。为了修补这个漏洞，需要添加在服务器端和客户端的图像认证功能。
+
+更新图片文件上传模块，定义允许上传的图像文件扩展名：
+`app/uploaders/picture_uploader.rb`
+```
+class PictureUploader < CarrierWave::Uploader::Base
+  storage :file
+  # 定义上传文件的存储位置，默认启用，不需要修改
+  def store_dir
+    "uploads/#{model.class.to_s.underscore}/#{mounted_as}/#{model.id}"
+  end
+  # 反注释以下语句，建立可上传文件扩展名白名单
+  def extension_whitelist
+    %w(jpg jpeg gif png)
+  end
+end
+```
+
+上传文件大小的验证在微博模型中定义，没有默认的便捷方法，需要单独定义为内部方法：
+`app/models/micropost.rb`
+```
+class Micropost < ApplicationRecord
+  ...
+  # 更新添加如下语句和内部方法
+  validate  :picture_size
+
+  private
+
+    # Validates the size of an uploaded picture.
+    def picture_size
+      if picture.size > 5.megabytes
+        errors.add(:picture, "should be less than 5MB")
+      end
+    end
+end
+```
+
+为控制客户端控制上传文件类型和大小，更新微博表单视图如下：
+`app/views/shared/_micropost_form.html.erb`
+```
+<%= form_for(@micropost) do |f| %>
+  <%= render 'shared/error_messages', object: f.object %>
+  <div class="field">
+    <%= f.text_area :content, placeholder: "Compose new micropost..." %>
+  </div>
+  <%= f.submit "Post", class: "btn btn-primary" %>
+  <span class="picture">
+    # 更新如下一行代码，添加文件上传类型限制
+    <%= f.file_field :picture, accept: 'image/jpeg,image/gif,image/png' %>
+  </span>
+<% end %>
+
+# 添加如下脚本，检测网页对象变化并触发对文件大小的检测
+<script type="text/javascript">
+  $('#micropost_picture').bind('change', function() {
+    var size_in_megabytes = this.files[0].size/1024/1024;
+    if (size_in_megabytes > 5) {
+      alert('Maximum file size is 5MB. Please choose a smaller file.');
+    }
+  });
+</script>
+```
+
+注意，客户端的图像验证没有强制作用，用户可以通过修改网页代码或向网页直接发送上传请求，绕过客户端验证，因此服务器端的验证相对更有必要。现在可以尝试上传格式或容量不合要求的文件，检查应用是否可以正确响应。
+
+### 图像调整
+
+为优化图片的显示，特别是将尺寸过大的文件调整到合适尺寸，这里在MacOS开发环境安装`ImageMagick`程序：
+```
+$ sudo yum install -y ImageMagick
+$ brew install imagemagick
+```
+
+更新图片文件上传模块的配置文件，将长或宽大于400像素的图片缩放到400像素，对更小的图片不做处理：
+`app/uploaders/picture_uploader.rb`
+```
+class PictureUploader < CarrierWave::Uploader::Base
+  # 通过反注释添加如下第一行代码，手动添加第二行代码
+  include CarrierWave::MiniMagick
+  process resize_to_limit: [400, 400]
+  ...
+end
+```
+
+目前运行测试会遇到错误，添加初始化配置文件，在测试中跳过图像调整：
+`config/initializers/skip_image_resizing.rb`
+```
+if Rails.env.test?
+  CarrierWave.configure do |config|
+    config.enable_processing = false
+  end
+end
+```
+
+然而我并没有遇到图像调整相关的测试错误，所以添加但注释掉了以上文件的内容。现在可以运行Rails服务器，验证上传大尺寸文件会被自动调整和缩放到合适大小。
+
+### 生产环境
+
+之后的部分是配置使用AWS的云存储来保存图片，由于不适用于中国内地就不再介绍，有兴趣可以参考教程原文的最后部分。这里依旧使用本地文件方式保存上传的图片，并收尾如下：
+```
+# 提交合并推送代码到在线文档库
+$ rails test
+$ git add -A
+$ git commit -m "Add user microposts"
+$ git checkout master
+$ git merge user-microposts
+$ git push
+# 发布到Heroku
+# 如果有丢失heroku快捷方式运行`$ heroku git:remote -a <heroku_app_name>`
+$ git push heroku
+$ heroku pg:reset DATABASE
+$ heroku run rails db:migrate
+$ heroku run rails db:seed
+```
+
+现在可以到Heroku上部署的生产环境测试本节添加的微博功能，祝各位好运。
+
+## 参考
+
+1. PostgreSQL推荐使用可变或无限容量的数据类型以保证更高运行效率：
+https://www.postgresql.org/docs/9.1/datatype-character.html
+2. 本节原始官方教程：
+https://www.railstutorial.org/book/user_microposts
