@@ -3727,3 +3727,976 @@ $ heroku run rails db:seed
 https://www.postgresql.org/docs/9.1/datatype-character.html
 2. 本节原始官方教程：
 https://www.railstutorial.org/book/user_microposts
+
+# 第十四章 关注用户
+
+教程原址：https://www.railstutorial.org/book/following_users
+
+这一章添加的功能允许用户相互关注，在关注方的主页显示被关注方更新的微博。这里将先后建立用户关系模型、网页接口和完整的状态更新源功能。应用场景如下：
+1. 一个用户从自己的简介页面出发，到用户列表页面。
+2. 选择另一个用户，打开后者的简介页面，并关注后者。
+3. 后者简介页面中的关注选项变为取消关注选项。
+4. 前者的关注对象和后者的关注人计数器各加一。
+5. 前者的根页面中，可以看到后者发布的微博。
+
+以上场景基于一个新建的关系模型，其中包含关注者和被关注者的用户ID，通过该基础关系模型可以进一步生成主动关注和被动被关注的用户关系模型。首先生成关系模型：
+```
+$ rails generate model Relationship follower_id:integer followed_id:integer
+```
+
+为关注者和被关注者，以及两者唯一关系建立索引，在实施迁移前修改数据库迁移定义文件：
+`db/migrate/[timestamp]_create_relationships.rb`
+```
+class CreateRelationships < ActiveRecord::Migration[5.0]
+  def change
+    create_table :relationships do |t|
+      t.integer :follower_id
+      t.integer :followed_id
+      t.timestamps
+    end
+    # 添加以下三行代码
+    add_index :relationships, :follower_id
+    add_index :relationships, :followed_id
+    add_index :relationships, [:follower_id, :followed_id], unique: true
+  end
+end
+```
+
+实施迁移：
+```
+$ rails db:migrate
+```
+
+### 用户关系
+
+更新用户模型，建立一对多的主动关系：
+`app/models/user.rb`
+```
+class User < ApplicationRecord
+  has_many :microposts, dependent: :destroy
+  # 更新添加以下三行代码
+  has_many :active_relationships, class_name:  "Relationship",
+                                  foreign_key: "follower_id",
+                                  dependent:   :destroy
+  ...
+end
+```
+
+相应的，更新关系模型定义，关联到用户模型：
+`app/models/relationship.rb`
+```
+class Relationship < ApplicationRecord
+  belongs_to :follower, class_name: "User"
+  belongs_to :followed, class_name: "User"
+end
+```
+
+与一对多的用户微博关系不同，主动关系模型对应的类名（Relationship）与关系名（active_relationships）不一致，因此这里需要特别声明类名称，并指明外键对应的属性名，最后由于删除用户也会删除相应的关系，所以对删除操作也做了依赖关系设定。
+
+在一对多的用户微博关系中，指定的`microposts`是微博对象在数据库中的表名称，该关系定义在`user`用户模型中，因此Rails可以自动在数据库的微博表中自动查找属性值为`user_id`的列并创建外部键值关系。主动关系虽然同样定义在用户模型中，但却通过关系模型所关联的数据库关系表格创建外键，因此也需要在关系模型中特别定义反向到用户模型的所属关系。即：
+* 一对多微博关系：用户模型->微博表格（用户ID外键自动创建）
+* 一对多用户主动关系：用户模型->关系模型->关系表格（手动指定关注者ID和被关注者ID外键）
+
+以上关系设定产生如下可用方法：
+```
+方法                                                       / 目的
+active_relationship.follower                              / 返回关注者
+active_relationship.followed                              / 返回被关注者
+user.active_relationships.create(followed_id: <user.id>)  / 与被关注者建立主动关系
+user.active_relationships.create!(followed_id: <user.id>) / 同上，强制执行
+user.active_relationships.build(followed_id: <user.id>)   / 返回主动关系对象
+```
+
+为验证关系模型，更新关系模型测试：
+`test/models/relationship_test.rb`
+```
+require 'test_helper'
+
+class RelationshipTest < ActiveSupport::TestCase
+
+  def setup
+    @relationship = Relationship.new(follower_id: users(:michael).id,
+                                     followed_id: users(:archer).id)
+  end
+
+  test "should be valid" do
+    assert @relationship.valid?
+  end
+
+  test "should require a follower_id" do
+    @relationship.follower_id = nil
+    assert_not @relationship.valid?
+  end
+
+  test "should require a followed_id" do
+    @relationship.followed_id = nil
+    assert_not @relationship.valid?
+  end
+end
+```
+
+以上测试并不复杂，准备基于两个用户关注和被关注的关系，验证关系有效，再分别设置关注或被关注用户ID为空，验证关系无效。为增加有效性检测，更新关系模型定义：
+`app/models/relationship.rb`
+```
+class Relationship < ApplicationRecord
+  belongs_to :follower, class_name: "User"
+  belongs_to :followed, class_name: "User"
+  # 更新追加以下两行代码
+  validates :follower_id, presence: true
+  validates :followed_id, presence: true
+end
+```
+
+注意，默认创建的关系模型测试用数据违反了关系模型的唯一性要求，这里可以删除或注释掉：
+`test/fixtures/relationships.yml`
+```
+# one:
+#   follower_id: 1
+#   followed_id: 1
+
+# two:
+#   follower_id: 1
+#   followed_id: 1
+```
+
+现在运行测试，确认可以通过。
+
+### 关注用户
+
+之前创建了外键，现在要使用外键建立关注关系，更新用户模型如下：
+`app/models/user.rb`
+```
+class User < ApplicationRecord
+  has_many :microposts, dependent: :destroy
+  has_many :active_relationships, class_name:  "Relationship",
+                                  foreign_key: "follower_id",
+                                  dependent:   :destroy
+  # 更新如下一行代码
+  has_many :following, through: :active_relationships, source: :followed
+  ...
+end
+```
+
+用户通过关系模型可以关注多个其他用户，默认使用如下命令：
+```
+has_many :followeds, through: :active_relationships
+```
+即通过之前创建的主动关系反向查找以当前用户ID为外键的对象。Rails可以自动以`followeds`的单数形式生成需要查找的外键名称`followed_id`。只是以上默认的命名规则产生的方法名称为`user.followeds`，有些奇怪，所以实际上使用了`following`为名称，而指定用`source: followeds`生成实际查找的字段名。
+
+经过添加以上命令，有如下方法可用：
+```
+user.following.include?(<user.id>) / 查看用户关注的对象中是否包含指定ID的用户
+user.following.find(<user.id>)     / 查找到用户关注的指定ID用户并返回
+user.following << <user.id>        / 添加指定ID的用户到当前用户的关注对象列表
+user.following.delete(<user.id>)   / 从当前用户关注对象列表删除指定ID的用户
+```
+
+在进一步完善关注和取消关注的功能前，先更新用户模型测试：
+`test/models/user_test.rb`
+```
+require 'test_helper'
+class UserTest < ActiveSupport::TestCase
+  ...
+  test "should follow and unfollow a user" do
+    # 准备两个用户
+    michael = users(:michael)
+    archer  = users(:archer)
+    # 确认没有关注关系
+    assert_not michael.following?(archer)
+    # 发起关注
+    michael.follow(archer)
+    # 确认关注关系
+    assert michael.following?(archer)
+    # 取消关注关系
+    michael.unfollow(archer)
+    # 确认没有关注关系
+    assert_not michael.following?(archer)
+  end
+end
+```
+
+现在运行测试当然会失败，为通过测试更新用户模型：
+`app/models/user.rb`
+```
+class User < ApplicationRecord
+  ...
+  # 关注用户
+  def follow(other_user)
+    following << other_user
+  end
+  # 取消关注用户
+  def unfollow(other_user)
+    following.delete(other_user)
+  end
+  # 确认当前用户是否在关注指定用户
+  def following?(other_user)
+    following.include?(other_user)
+  end
+
+  private
+  ...
+end
+```
+
+现在运行测试，确认可以通过。
+
+### 关注者
+
+与之前添加关注的模型和方法类似，查询关注者依赖被动关系模型，更新用户模型如下：
+`app/models/user.rb`
+```
+class User < ApplicationRecord
+  has_many :microposts, dependent: :destroy
+  has_many :active_relationships,  class_name:  "Relationship",
+                                   foreign_key: "follower_id",
+                                   dependent:   :destroy
+  # 更新添加如下三行代码，注意只是更改了关系名称，和外键名称
+  has_many :passive_relationships, class_name:  "Relationship",
+                                   foreign_key: "followed_id",
+                                   dependent:   :destroy
+  has_many :following, through: :active_relationships,  source: :followed
+  # 使用外键查询相关用户的方法也是类似
+  has_many :followers, through: :passive_relationships, source: :follower
+  ...
+end
+```
+
+更新用户模型测试：
+`test/models/user_test.rb`
+```
+require 'test_helper'
+class UserTest < ActiveSupport::TestCase
+  ...
+  test "should follow and unfollow a user" do
+    michael  = users(:michael)
+    archer   = users(:archer)
+    assert_not michael.following?(archer)
+    michael.follow(archer)
+    assert michael.following?(archer)
+    # 更新添加如下一行代码，确认被关注用户的关注者中有关注者
+    assert archer.followers.include?(michael)
+    michael.unfollow(archer)
+    assert_not michael.following?(archer)
+  end
+end
+```
+
+测试，确认目前所有功能正常。
+
+## 网页界面
+
+### 样本数据
+
+更新数据库种子文件，让第一个用户关注3到51号用户，同时得到4到41号用户的关注：
+`db/seeds.rb`
+```
+...
+# Following relationships
+users = User.all
+user  = users.first
+following = users[2..50]
+followers = users[3..40]
+following.each { |followed| user.follow(followed) }
+followers.each { |follower| follower.follow(user) }
+```
+
+重置数据库并生成测试用数据：
+```
+$ rails db:migrate:reset
+$ rails db:seed
+```
+
+通过Rails控制台验证测试数据：
+```
+$ rails console
+> User.first.followers.count 
+=> 38
+> User.first.following.count
+=> 49
+```
+
+### 关注状态
+
+在登录用户的根页面，发布微博的表单和用户简介之间，插入关注用户和被关注用户的状态信息。作为两个独立的链接，分别跳转到关注的用户和关注者用户列表。为创建这两个链接，更新路由：
+`config/routes.rb`
+```
+Rails.application.routes.draw do
+  root   'static_pages#home'
+  get    '/help',    to: 'static_pages#help'
+  get    '/about',   to: 'static_pages#about'
+  get    '/contact', to: 'static_pages#contact'
+  get    '/signup',  to: 'users#new'
+  get    '/login',   to: 'sessions#new'
+  post   '/login',   to: 'sessions#create'
+  delete '/logout',  to: 'sessions#destroy'
+  # 更新以下代码段
+  resources :users do
+    member do
+      get :following, :followers
+    end
+  end
+  resources :account_activations, only: [:edit]
+  resources :password_resets,     only: [:new, :create, :edit, :update]
+  resources :microposts,          only: [:create, :destroy]
+end
+```
+
+以上更新代码段中的`member`方法为每个用户成员创建两个可以通过GET方法访问的链接，链接如下：
+* /users/<user.id>/following
+* /users/<user.id>/followers
+
+如果其他不变，将以上更新代码段中的`member`方法换成`collection`方法，则产生如下链接：
+* /users/following
+* /users/followers
+
+接着，创建显示关注对象和关注者状态链接的代码片段：
+`app/views/shared/_stats.html.erb`
+```
+<% @user ||= current_user %>
+<div class="stats">
+  <a href="<%= following_user_path(@user) %>">
+    <strong id="following" class="stat">
+      <%= @user.following.count %>
+    </strong>
+    following
+  </a>
+  <a href="<%= followers_user_path(@user) %>">
+    <strong id="followers" class="stat">
+      <%= @user.followers.count %>
+    </strong>
+    followers
+  </a>
+</div>
+```
+
+更新根页面登录用户的静态文件定义，添加对关注状态代码片段的引用：
+`app/views/shared/_logged_in_home.html.erb`
+```
+  <div class="row">
+    <aside class="col-md-4">
+      <section class="user_info">
+        <%= render 'shared/user_info' %>
+      </section>
+      # 添加如下三行代码，引用关注状态代码片段
+      <section class="stats">
+        <%= render 'shared/stats' %>
+      </section>
+      <section class="micropost_form">
+        <%= render 'shared/micropost_form' %>
+      </section>
+    </aside>
+    <div class="col-md-8">
+      <h3>Micropost Feed</h3>
+      <%= render 'shared/feed' %>
+    </div>
+  </div>
+```
+
+为添加关注状态格式的定义，更新自定义格式：
+`app/assets/stylesheets/custom.scss`
+```
+...
+/* sidebar */
+...
+.gravatar {
+  float: left;
+  margin-right: 10px;
+}
+
+.gravatar_edit {
+  margin-top: 15px;
+}
+
+.stats {
+  overflow: auto;
+  margin-top: 0;
+  padding: 0;
+  a {
+    float: left;
+    padding: 0 10px;
+    border-left: 1px solid $gray-lighter;
+    color: gray;
+    &:first-child {
+      padding-left: 0;
+      border: 0;
+    }
+    &:hover {
+      text-decoration: none;
+      color: blue;
+    }
+  }
+  strong {
+    display: block;
+  }
+}
+
+.user_avatars {
+  overflow: auto;
+  margin-top: 10px;
+  .gravatar {
+    margin: 1px 1px;
+  }
+  a {
+    padding: 0;
+  }
+}
+
+.users.follow {
+  padding: 0;
+}
+
+/* forms */
+...
+```
+
+### 关注按钮
+
+为了在其他用户简介页面上操作关注与取消关注的操作，创建关注和取消关注的按钮代码片段。
+
+以下生成关注按钮的代码片段，发出POST请求，创建一个主动关系，并使用隐藏对象将`followed_id`传递给控制器：
+`app/views/users/_follow.html.erb`
+```
+<%= form_for(current_user.active_relationships.build) do |f| %>
+  <div><%= hidden_field_tag :followed_id, @user.id %></div>
+  <%= f.submit "Follow", class: "btn btn-primary" %>
+<% end %>
+```
+
+以下生成取消关注按钮的代码片段，找到一个主动关系，并发出删除请求：
+`app/views/users/_unfollow.html.erb`
+```
+<%= form_for(current_user.active_relationships.find_by(followed_id: @user.id),
+             html: { method: :delete }) do |f| %>
+  <%= f.submit "Unfollow", class: "btn" %>
+<% end %>
+```
+
+关注和取消关注的按钮实际上是需要配置路由并连接动作的，这里更新路由：
+`config/routes.rb`
+```
+Rails.application.routes.draw do
+  # 更新添加如下一行代码
+  resources :relationships,       only: [:create, :destroy]
+end
+```
+
+将关注或取消关注的按钮代码片段放到关注表单的代码片段中：
+`app/views/users/_follow_form.html.erb`
+```
+# 比较当前登录用户与调用该代码片段的页面所传入的用户变量
+# 如果二者为同一用户则什么也不做，否则判断二者是否有关注
+<% unless current_user?(@user) %>
+  <div id="follow_form">
+  # 如果当前登录用户有关注页面传入的用户变量，则生成取消关注按钮
+  <% if current_user.following?(@user) %>
+    <%= render 'unfollow' %>
+  <% else %>
+  # 否则，即没有关注关系，则生成关注按钮
+    <%= render 'follow' %>
+  <% end %>
+  </div>
+<% end %>
+```
+
+更新用户简介视图，放入关注状态和关注表单对象：
+`app/views/users/show.html.erb`
+```
+<% provide(:title, @user.name) %>
+<div class="row">
+  <aside class="col-md-4">
+    <section>
+      <h1>
+        <%= gravatar_for @user %>
+        <%= @user.name %>
+      </h1>
+    </section>
+    # 在这里插入关注状态
+    <section class="stats">
+      <%= render 'shared/stats' %>
+    </section>
+  </aside>
+  <div class="col-md-8">
+    # 在这里插入关注表单，即根据用户关系放置关注或取消关注的按钮
+    <%= render 'follow_form' if logged_in? %>
+    <% if @user.microposts.any? %>
+      <h3>Microposts (<%= @user.microposts.count %>)</h3>
+      <ol class="microposts">
+        <%= render @microposts %>
+      </ol>
+      <%= will_paginate @microposts %>
+    <% end %>
+  </div>
+</div>
+```
+
+### 关注对象和关注者页面
+
+相关页面包含当前登录用户简介和一个用户列表，分别是关注对象和关注者列表。两个页面都只对登录用户可用，先写出测试代码，更新用户控制器测试：
+`test/controllers/users_controller_test.rb`
+```
+require 'test_helper'
+class UsersControllerTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user = users(:michael)
+    @other_user = users(:archer)
+  end
+  ...
+
+  test "should redirect following when not logged in" do
+    get following_user_path(@user)
+    assert_redirected_to login_url
+  end
+
+  test "should redirect followers when not logged in" do
+    get followers_user_path(@user)
+    assert_redirected_to login_url
+  end
+end
+```
+
+更新用户控制器：
+`app/controllers/users_controller.rb`
+```
+class UsersController < ApplicationController
+  # 添加关注对象和关注者的动作到登录条件限制列表
+  before_action :logged_in_user, only: [:index, :edit, :update, :destroy,
+                                        :following, :followers]
+  ...
+  # 准备标题、当前登录用户和关注用户变量，生成用户列表
+  def following
+    @title = "Following"
+    @user  = User.find(params[:id])
+    @users = @user.following.paginate(page: params[:page])
+    render 'show_follow'
+  end
+  # 准备标题、当前登录用户和关注者变量，生成用户列表
+  def followers
+    @title = "Followers"
+    @user  = User.find(params[:id])
+    @users = @user.followers.paginate(page: params[:page])
+    render 'show_follow'
+  end
+
+  private
+  ...
+end
+```
+
+创建显示关注用户和关注者页面的模版文件，即前文中生成页面使用的模版：
+`app/views/users/show_follow.html.erb`
+```
+<% provide(:title, @title) %>
+<div class="row">
+  <aside class="col-md-4">
+    <section class="user_info">
+      <%= gravatar_for @user %>
+      <h1><%= @user.name %></h1>
+      <span><%= link_to "view my profile", @user %></span>
+      <span><b>Microposts:</b> <%= @user.microposts.count %></span>
+    </section>
+    <section class="stats">
+      <%= render 'shared/stats' %>
+      <% if @users.any? %>
+        <div class="user_avatars">
+          <% @users.each do |user| %>
+            <%= link_to gravatar_for(user, size: 30), user %>
+          <% end %>
+        </div>
+      <% end %>
+    </section>
+  </aside>
+  <div class="col-md-8">
+    <h3><%= @title %></h3>
+    <% if @users.any? %>
+      <ul class="users follow">
+        <%= render @users %>
+      </ul>
+      <%= will_paginate %>
+    <% end %>
+  </div>
+</div>
+```
+
+执行测试，确认到目前为止的代码无错。
+
+生成关注功能的集成测试：
+```
+$ rails generate integration_test following
+```
+
+更新关注集成测试：
+`test/integration/following_test.rb`
+```
+require 'test_helper'
+
+class FollowingTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user = users(:michael)
+    log_in_as(@user)
+  end
+
+  test "following page" do
+    get following_user_path(@user)
+    assert_not @user.following.empty?
+    assert_match @user.following.count.to_s, response.body
+    @user.following.each do |user|
+      assert_select "a[href=?]", user_path(user)
+    end
+  end
+
+  test "followers page" do
+    get followers_user_path(@user)
+    assert_not @user.followers.empty?
+    assert_match @user.followers.count.to_s, response.body
+    @user.followers.each do |user|
+      assert_select "a[href=?]", user_path(user)
+    end
+  end
+end
+```
+
+更新关系的集成测试样本数据：
+`test/fixtures/relationships.yml`
+```
+one:
+  follower: michael
+  followed: lana
+
+two:
+  follower: michael
+  followed: malory
+
+three:
+  follower: lana
+  followed: michael
+
+four:
+  follower: archer
+  followed: michael
+```
+
+运行测试，确认可以通过。
+
+### 关注按钮
+
+生成关系控制器：
+```
+$ rails generate controller Relationships
+```
+
+完善关系控制器测试场景：
+`test/controllers/relationships_controller_test.rb`
+```
+require 'test_helper'
+
+class RelationshipsControllerTest < ActionDispatch::IntegrationTest
+
+  test "create should require logged-in user" do
+    assert_no_difference 'Relationship.count' do
+      post relationships_path
+    end
+    assert_redirected_to login_url
+  end
+
+  test "destroy should require logged-in user" do
+    assert_no_difference 'Relationship.count' do
+      delete relationship_path(relationships(:one))
+    end
+    assert_redirected_to login_url
+  end
+end
+```
+
+更新关系控制器：
+`app/controllers/relationships_controller.rb`
+```
+class RelationshipsController < ApplicationController
+  before_action :logged_in_user
+
+  def create
+    user = User.find(params[:followed_id])
+    current_user.follow(user)
+    redirect_to user
+  end
+
+  def destroy
+    user = Relationship.find(params[:id]).followed
+    current_user.unfollow(user)
+    redirect_to user
+  end
+end
+```
+
+测试，确保可以通过。
+
+### 优化按钮
+
+更新关注按钮，使用Ajax：
+`app/views/users/_follow.html.erb`
+```
+<%= form_for(current_user.active_relationships.build, remote: true) do |f| %>
+  <div><%= hidden_field_tag :followed_id, @user.id %></div>
+  <%= f.submit "Follow", class: "btn btn-primary" %>
+<% end %>
+```
+
+更新关注按钮，使用Ajax：
+`app/views/users/_unfollow.html.erb`
+```
+<%= form_for(current_user.active_relationships.find_by(followed_id: @user.id),
+             html: { method: :delete },
+             remote: true) do |f| %>
+  <%= f.submit "Unfollow", class: "btn" %>
+<% end %>
+```
+
+更新关系控制器，响应Ajax请求：
+`app/controllers/relationships_controller.rb`
+```
+class RelationshipsController < ApplicationController
+  before_action :logged_in_user
+
+  def create
+    @user = User.find(params[:followed_id])
+    current_user.follow(@user)
+    respond_to do |format|
+      format.html { redirect_to @user }
+      format.js
+    end
+  end
+
+  def destroy
+    @user = Relationship.find(params[:id]).followed
+    current_user.unfollow(@user)
+    respond_to do |format|
+      format.html { redirect_to @user }
+      format.js
+    end
+  end
+end
+```
+
+更新应用程序配置：
+`config/application.rb`
+```
+require File.expand_path('../boot', __FILE__)
+...
+module SampleApp
+  class Application < Rails::Application
+    ...
+    # 在远程表单中包含认证令牌
+    config.action_view.embed_authenticity_token_in_remote_forms = true
+  end
+end
+```
+
+创建嵌入了JS的Ruby命令，创建关注关系：
+`app/views/relationships/create.js.erb`
+```
+$("#follow_form").html("<%= escape_javascript(render('users/unfollow')) %>");
+$("#followers").html('<%= @user.followers.count %>');
+```
+
+创建嵌入了JS的Ruby命令，删除关注关系：
+`app/views/relationships/destroy.js.erb`
+```
+$("#follow_form").html("<%= escape_javascript(render('users/follow')) %>");
+$("#followers").html('<%= @user.followers.count %>');
+```
+
+### 测试关注
+
+更新关注功能的集成测试：
+`test/integration/following_test.rb`
+```
+require 'test_helper'
+
+class FollowingTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user  = users(:michael)
+    @other = users(:archer)
+    log_in_as(@user)
+  end
+  ...
+  test "should follow a user the standard way" do
+    assert_difference '@user.following.count', 1 do
+      post relationships_path, params: { followed_id: @other.id }
+    end
+  end
+
+  test "should follow a user with Ajax" do
+    assert_difference '@user.following.count', 1 do
+      post relationships_path, xhr: true, params: { followed_id: @other.id }
+    end
+  end
+
+  test "should unfollow a user the standard way" do
+    @user.follow(@other)
+    relationship = @user.active_relationships.find_by(followed_id: @other.id)
+    assert_difference '@user.following.count', -1 do
+      delete relationship_path(relationship)
+    end
+  end
+
+  test "should unfollow a user with Ajax" do
+    @user.follow(@other)
+    relationship = @user.active_relationships.find_by(followed_id: @other.id)
+    assert_difference '@user.following.count', -1 do
+      delete relationship_path(relationship), xhr: true
+    end
+  end
+end
+```
+
+运行测试，确认通过：
+
+## 状态更新源
+
+目前，在用户简介和已登录用户主页上显示的微博列表只包含登录用户自身发布的微博。这里将完善微博的状态更新源，使其包含当前用户并其所有关注用户发布的微博，并按逆序排列以保证最新的在最前。
+
+回忆之前创建的关系测试数据样本：
+`test/fixtures/relationships.yml`
+```
+one:
+  follower: michael
+  followed: lana
+
+two:
+  follower: michael
+  followed: malory
+
+three:
+  follower: lana
+  followed: michael
+
+four:
+  follower: archer
+  followed: michael
+```
+在以上第一个测试用样本数据中，定义了`michael`关注`lana`，但四个样本都没有定义`archer`关注`michael`。
+
+基于以上样本数据，更新用户模型测试，定义三个测试场景：
+`test/models/user_test.rb`
+```
+require 'test_helper'
+
+class UserTest < ActiveSupport::TestCase
+  ...
+  test "feed should have the right posts" do
+    michael = users(:michael)
+    archer  = users(:archer)
+    lana    = users(:lana)
+    # 确认michael可以拿到关注用户lana的微博更新
+    lana.microposts.each do |post_following|
+      assert michael.feed.include?(post_following)
+    end
+    # 确认michael可以拿到自己的微博更新
+    michael.microposts.each do |post_self|
+      assert michael.feed.include?(post_self)
+    end
+    # 确认michael不会拿到未关注用户archer的微博更新
+    archer.microposts.each do |post_unfollowed|
+      assert_not michael.feed.include?(post_unfollowed)
+    end
+  end
+end
+```
+
+更新用户模型的`feed`方法，返回自身和关注用户的微博：
+`app/models/user.rb`
+```
+class User < ApplicationRecord
+  ...
+  # 更新如下代码块
+  def feed
+    Micropost.where("user_id IN (?) OR user_id = ?", following_ids, id)
+  end
+  ...
+end
+```
+以上更新的命令会由Rails处理生成相应的SQL查询语句，由于在用户模型内部，`following_ids`和`id`自动指向调用该方法的用户实例所关注的用户ID和其自身ID，验证如下：
+```
+$ rails console
+> user = User.find(1)
+User Load (0.2ms)  SELECT  "users".* FROM "users" WHERE "users"."id" = ? LIMIT ?  [["id", 1], ["LIMIT", 1]]
+irb(main):002:0> user.id
+=> 1
+irb(main):003:0> user.following_ids
+SELECT "users"."id" FROM "users" INNER JOIN "relationships" ON "users"."id" = "relationships"."followed_id" WHERE "relationships"."follower_id" = ?  [["follower_id", 1]]
+=> [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+```
+注意Rails对用户`following_ids`属性的自动生成，这是由之前定义的关系模型帮助完成的。
+
+运行测试，确认可以通过。
+
+### 性能优化
+
+目前，如验证代码中所示，`user.following_ids`已经从数据库完成提取出来，进一步的操作在数据库外部进行，在关注用户数量过多时会发生性能问题。更有效的方法是将整个SQL查询语句完整的放入代码中，不在两次SQL查询间留空隙：
+
+更新用户模型：
+`app/models/user.rb`
+```
+class User < ApplicationRecord
+  ...
+  # Returns a user's status feed.
+  def feed
+    following_ids = "SELECT followed_id FROM relationships
+                     WHERE  follower_id = :user_id"
+    Micropost.where("user_id IN (#{following_ids})
+                     OR user_id = :user_id", user_id: id)
+  end
+  ...
+end
+```
+
+更新关注功能的集成测试：
+`test/integration/following_test.rb`
+```
+require 'test_helper'
+
+class FollowingTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user = users(:michael)
+    log_in_as(@user)
+  end
+  ...
+  test "feed on Home page" do
+    get root_path
+    @user.feed.paginate(page: 1).each do |micropost|
+      assert_match CGI.escapeHTML(micropost.content), response.body
+    end
+  end
+end
+```
+
+## 收尾和其他
+
+惯例的收尾，发布到代码库和Heroku生产环境：
+```
+$ rails test
+$ git add -A
+$ git commit -m "Add user following"
+$ git checkout master
+$ git merge following-users
+$ git push
+$ git push heroku
+$ heroku pg:reset DATABASE --confirm
+$ heroku run rails db:migrate
+$ heroku run rails db:seed
+```
+
+这个教程在此结束，提供如下扩展资源：
+* https://www.learnenough.com/story
+* http://launchschool.com/railstutorial
+* http://turing.io/
+* http://bloc.io/
+* http://www.thefirehoseproject.com/?tid=HARTL-RAILS-TUT-EB2&pid=HARTL-RAILS-TUT-EB2
+* http://www.thinkful.com/a/railstutorial
+* https://pragmaticstudio.com/refs/railstutorial
+* https://tutorials.railsapps.org/hartl
+
+另外，愿教程的作者已经在准备更新，基于Rails6平台，可以保持关注，希望保持免费和开放。最后的最后，我发布到Heroku的程序链接如下，欢迎测试：https://ror2019.herokuapp.com/
