@@ -23,39 +23,24 @@ $ rails server
 
 ## 第十章 更新、列印和删除用户
 
-本节完成用户资源的其他REST动作，添加包括编辑、更新、列印和删除操作。首先，添加允许用户修改自身简介的功能，同时强制对该操作开启认证授权。之后，添加列印用户的功能，涉及到抽样数据和分页，同样需要强制授权。最后，添加删除用户的功能，通过建立一个高权限的管理员用户类来执行。
+官方教程：https://www.railstutorial.org/book/updating_and_deleting_users
+
+本节完成用户资源的其他REST动作，添加包括编辑、更新、列印和删除操作。
+1. 添加允许用户修改自身简介的功能，同时强制对该操作开启认证授权。
+2. 添加列印用户的功能，涉及到抽样数据和分页，同样需要强制授权。
+3. 添加删除用户的功能，通过建立一个高权限的管理员用户类来执行。
 
 ## 切换到本地开发环境
 
-这是与本教程无关的一段插曲。由于AWS的Cloud9是建立在AWS的虚拟机上，会多少收费一些费用。从这里开始恢复部署本地的Rails系统，并转移代码库到GitHub。首先，检查本地的环境对ruby、rails、和git是否就绪。
-```
-$ ruby --version
-ruby 2.5.1p57 ...
-$ rails --version
-Rails 5.2.1
-$ git --version
-git version 2.20.1
-```
-如果有任一以上工具没有就绪，可以自行搜索或根据系统提示完成安装。接着，克隆项目文档库到本地，并上传到GitHub。
-```
+之前使用的云端IDE是Cloud9，建立在AWS的虚拟机上。从现在开始迁移开发环境到本地，转移代码库到GitHub。
 
-```
-最后，尝试运行rails服务器，系统会提示运行bundle安装命令。注意，由于生产环境中配置的pg数据库在本地开发和测试中不会使用，安装反而还会遇到问题，所以在bundle安装中可以配置参数跳过生产环境的库安装。此时运行rails服务器不会报错，但导航到程序页面会遇到错误提示，需要根据提示做数据库迁移。终止rails服务器运行，迁移数据库，再重新运行rails数据库即可。
+首先，检查本地的环境对ruby、rails、和git是否就绪。如有没就绪项，可自行搜索或根据系统提示完成安装。接着从BitBucket克隆项目文档库到本地，并上传到GitHub。最后，尝试运行rails服务器，系统会提示运行bundle安装命令。
 
-```
-# 检查本地Rails是否就绪
-
-# 登录bitbucket获取项目文档库克隆命令
-$ git clone git@bitbucket.org:<your_username>/sample_app.git
-# 安装依赖的库
-$ bundle install --without production
-# 迁移数据库
-$ rails db:migrate
-```
+注意，由于生产环境中配置的pg数据库在本地开发和测试中不会使用，安装反而还会遇到问题，所以在bundle安装中可以配置参数跳过生产环境的库安装。此时运行rails服务器不会报错，但导航到程序页面会遇到错误提示，需要根据提示做数据库迁移。终止rails服务器，迁移数据库，再重新运行rails数据库即可。
 
 ## 更新用户
 
-编辑用户信息的方式与创建新用户类似，只是用`edit`动作而不是`new`动作生成用户视图，用`update`响应HTTP的`PATCH`请求而不是用`create`响应`POST`请求。最主要的区别是，虽然任何人都可以注册，但只有当前用户才能修改自己的简介。这里将会用`before filter`，即一个提前过滤功能实现对用户的登录状态验证。
+编辑用户信息的方式与创建新用户类似，只是用`edit`动作而不是`new`动作生成用户视图，用`update`响应`PATCH`请求而不是用`create`响应`POST`请求。最主要的区别是，虽然任何人都可以注册，但只有当前用户才能修改自己的简介。这里将会用`before filter`，即一个提前过滤功能实现对用户的登录状态验证。
 
 ```
 # 首先创建本节的代码分支
@@ -64,45 +49,22 @@ $ git checkout -b updating-users
 
 ### 编辑表单
 
-为了启用用户简介编辑视图页面，需要通过在用户控制器添加`edit`动作和在用户视图中添加`edit`视图。这里，先添加`edit`动作，涉及到从数据库中拿到相关的用户，编辑用户简介的页面URL地址为`/users/<user_id>/edit`。由于用户ID的`user_id`变量可以通过`params[:id]`引用，更新用户控制器添加`edit`动作如下：
+为了启用用户简介编辑视图页面，需要通过在用户控制器添加`edit`动作和在用户视图中添加`edit`视图。这里，先添加`edit`动作，从数据库中拿到相关的用户，编辑用户简介的页面URL地址为`/users/<user_id>/edit`。用户ID的`user_id`变量可以通过`params[:id]`引用，更新用户控制器添加`edit`动作如下：
 更新的文件：app/controllers/users_controller.rb
 ```
 class UsersController < ApplicationController
-  def new
-    @user = User.new
-  end
-  
-  def show
-    @user = User.find(params[:id])
-  end
-  
-  def create
-    @user = User.new(user_params)
-    if @user.save
-      log_in @user
-      flash[:success] = "Your new account is created!"
-      redirect_to user_path(@user)
-    else
-      render 'new'
-    end
-  end
-  
+  ...
   # 新增代码开始
   def edit
     @user = User.find(params[:id])
   end
-  # 新增代码结束
 
   private
-
-    def user_params
-      params.require(:user).permit(:name, :email, :password,
-                                   :password_confirmation)
-    end
+  ...
 end
 ```
 
-创建用户的编辑视图文件：
+创建用户的`edit`视图文件：
 app/views/users/edit.html.erb
 ```
 <% provide(:title, "Edit user") %>
@@ -135,16 +97,15 @@ app/views/users/edit.html.erb
   </div>
 </div>
 ```
-更新导航下拉链接项目``
-app/views/layouts/_header.html.erb
+
+更新导航下拉链接项目
+`app/views/layouts/_header.html.erb`
 ```
-# 原来的设定
-<li><%= link_to "Settings", '#' %></li>
-# 更新的结果
+# 更新的部分
 <li><%= link_to "Settings", edit_user_path(current_user) %></li>
 ```
 
-这部分有两个残留问题，一是在编辑用户简介页面中，用户头像超链接打开的新页面是一个外部资源，目前的代码中存在安全隐患。二是目前编辑用户简介和新用户注册页面的代码中存在冗余，集中在用户信息的表单部分，可以提取出来作为单独模块。
+这部分有两个残留问题，一是用户简介页面用户头像超链接打开的是一个外部资源，目前的代码中存在安全隐患。二是用户简介和用户注册页面存在代码冗余，即用户信息的表单部分，可以提取出来作为单独的代码片段。
 
 第一个问题：
 ```
@@ -155,7 +116,7 @@ app/views/layouts/_header.html.erb
 ```
 
 第二个问题：
-新建表单文件`app/views/users/_form.html.erb`:
+新建表单代码片段`app/views/users/_form.html.erb`:
 ```
 <%= form_for(@user) do |f| %>
   <%= render 'shared/error_messages', object: @user %>
@@ -172,11 +133,13 @@ app/views/layouts/_header.html.erb
   <%= f.label :password_confirmation %>
   <%= f.password_field :password_confirmation, class: 'form-control' %>
 
-  # 注意这里的表单按名称需要引用外部变量填充
+  # 注意这里的表单按钮名称由外部变量填充
   <%= f.submit yield(:button_text), class: "btn btn-primary" %>
 <% end %>
 ```
-更新文件`app/views/users/new.html.erb`:
+
+更新新建用户的视图文件，引用抽取的表单代码片段：
+`app/views/users/new.html.erb`:
 ```
 <% provide(:title, 'Sign up') %>
 # 添加如下语句为外部表单组件提供按钮名称参数
@@ -188,7 +151,9 @@ app/views/layouts/_header.html.erb
   </div>
 </div>
 ```
-更新文件`app/views/users/edit.html.erb`:
+
+更新编辑用户信息的视图文件，引用抽取的表单代码片段：
+`app/views/users/edit.html.erb`:
 ```
 <% provide(:title, 'Edit user') %>
 # 添加如下语句为外部表单组件提供按钮名称参数
@@ -205,11 +170,23 @@ app/views/layouts/_header.html.erb
 </div>
 ```
 
+注意，使用外部代码片段时，可以从调用代码片段的页面传递参数到代码片段中去：
+```
+# 调用代码片段的页面中，用`provide`在头部定义将要传递的参数
+<% provide(:button_text, 'Create my account') %>
+# 代码片段中，用`yield`提取传入的参数值
+<%= f.submit yield(:button_text), class: "btn btn-primary" %>
+```
+
 ### 编辑失败
 
-对编辑失败处理类似于注册失败，首先创建`update`动作，使用`update_attributes`方法基于提交的`params`参数更新用户，在提交信息无效的情况下`update`动作返回代表失败的`false`结果，判别式的`else`语句重新导航到编辑页面，这与`create`动作的操作流程类似。
+编辑失败的处理与注册失败的处理方式类似，流程如下：
+1. 创建`update`动作，使用提交的参数尝试更新用户。
+2. 更新成功的后续再议，更新失败则返回`false`。
+3. 如果更新失败则重新跳转到编辑页。
 
-更新文件`app/controllers/users_controller.rb`:
+更新用户控制器，实现以上编辑用户简介的逻辑：
+`app/controllers/users_controller.rb`:
 ```
 # 在之前添加的edit方法之后添加如下方法
   def update
@@ -221,16 +198,16 @@ app/views/layouts/_header.html.erb
     end
   end
 ```
-这里关于成功编辑的处理留在后面再充实，目前只是放下一个展位符。
 
-### 集成测试
+### 测试编辑失败
 
-根据关于测试的最佳操作，这里自动生成集成测试的文件，并编辑添加测试场景：
+测试编辑失败时的流程，生成集成测试的文件：
 ```
 $ rails generate integration_test users_edit
 ```
 
-更新文件`test/integration/users_edit_test.rb`:
+更新文件用户编辑操作的集成测试场景：
+`test/integration/users_edit_test.rb`:
 ```
 require 'test_helper'
 
@@ -253,6 +230,8 @@ class UsersEditTest < ActionDispatch::IntegrationTest
 end
 ```
 
+以上测试验证用户编辑页面可以正确显示，在传递无效参数造成编辑失败的情况下会重新导航到编辑页面。
+
 运行测试，检验结果：
 ```
 $ rails test
@@ -260,9 +239,16 @@ $ rails test
 
 ### 编辑成功
 
-这里使用测试驱动开发的TDD方法，先完成测试部分代码，模拟编辑成功情况下的流程：
-更新测试文件`test/integration/users_edit_test.rb`，添加如下测试场景设计：
+使用测试驱动开发的TDD方法，先完成测试代码，设计编辑成功情况下的流程：
+1. 导航到用户简介编辑页面，确认页面模版显示正确。
+2. 使用有效参数更新用户简介。
+3. 确认闪信不为空，且页面重定向到用户简介页面。
+4. 重载页面，确认用户名和邮箱显示正确。
+
+更新编辑用户的集成测试：
+`test/integration/users_edit_test.rb`
 ```
+  # 添加如下编辑成功时的测试场景
   test "successful edit" do
     get edit_user_path(@user)
     assert_template 'users/edit'
@@ -280,12 +266,13 @@ $ rails test
   end
 ```
 
-更新用户控制器`app/controllers/users_controller.rb`中对`update`动作的定义：
+更新用户控制器：
+`app/controllers/users_controller.rb`中对`update`动作的定义：
 ```
   def update
     @user = User.find(params[:id])
     if @user.update_attributes(user_params)
-      # 在成功编辑用户简介后发出闪信确认信息，重定向页面到用户简介查看窗口
+      # 更新添加以下两行代码
       flash[:success] = "Profile updated"
       redirect_to @user
     else
@@ -293,25 +280,36 @@ $ rails test
     end
   end
 ```
+以上更新在成功编辑用户简介后闪信确认，并重定向页面到用户简介页面。
 
-更新用户模型`app/models/user.rb`中对密码长度的定义，主要添加了条件`allow_nil: true`如下：
+更新用户模型：
+`app/models/user.rb`
 ```
 validates :password, presence: true, length: { minimum: 6 }, allow_nil: true
 ```
-这里不用担心对密码为空的设置会允许用户使用空密码注册，因为之前有`has_secure_password`的限定条件会对新用户注册的密码做检查，而`validates :password`只会对用户更改的信息有效，不会影响新用户注册的条件检查，可以测试验证。
+以上主要更新密码长度的定义，添加了条件`allow_nil: true`，即允许空白密码。
 
-现在运行测试`rails test`，可以验证之前定义的测试场景可以通过。
+这里不用担心密码为空会允许用户使用空密码注册，因为之前有`has_secure_password`的限定条件会对新用户注册的密码做检查，而`validates :password`只会对用户更改的信息有效，不会影响新用户注册的条件检查。
+
+运行测试`rails test`，验证可以通过。
 
 ## 用户授权
 
-认证过程识别用户，授权过程限制用户的权限。目前，任何用户，甚至没有登录的用户，都可以访问和更新已有用户的信息，这里我们实施的安全模型将限制只有登录用户可以修改自己的信息。
+认证识别用户，授权限制权限。目前，任何用户，甚至没有登录的用户，都可以访问和更新已有用户的信息，这里我们实施的安全模型将限制只有登录用户可以修改自己的信息。
 
-对于未登录用户，如果他们试图访问在授权后可以访问的页面，如用户简介编辑页面，应该跳转到登录页面。如果未登录用户视图访问一般用户不会被授权访问，或者不存存在的页面，应该跳转到网站主页。
+设想存在如下场景：
+* 未登录用户，试图访问需要授权的页面，如用户简介编辑页面，系统会跳转到登录页面并给出帮助信息。
+* 任意用户，试图访问无权访问的页面，如已登录用户访问其他用户的简介修改页面，系统会跳转到网站主页。
 
-更新用户控制器文件`pp/controllers/users_controller.rb`：
+### 需要登录的用户
+
+为增加对指定动作的登录前提要求，在控制器中增加前提过滤设置，强制在触发某些控制器动作前先执行某些指定方法。注意，如果不指定控制器动作，前提过滤会应用到控制器中的全部动作。
+
+更新用户控制器，添加如下代码：
+`app/controllers/users_controller.rb`：
 ```
 class UsersController < ApplicationController
-  # 在指定的edit和update动作前要求检查用户的登录状况
+  # 在触发edit或update动作前先执行指定的logged_in_user方法
   before_action :logged_in_user, only: [:edit, :update]
   ...
   private
@@ -321,7 +319,6 @@ class UsersController < ApplicationController
                                    :password_confirmation)
     end
 
-    # Before filters
     # 确认用户登录状态
     def logged_in_user
       # 如果没有登录，闪信通知用户登录并跳转页面到登录页面
@@ -333,8 +330,8 @@ class UsersController < ApplicationController
 end
 ```
 
-此时运行测试会遇到错误，因为关于用户编辑的集成测试中没有指定用户登录，这里更新如下。
-更新`test/integration/users_edit_test.rb`文件中成功和失败的编辑场景定义：
+此时运行测试会遇到错误，因为关于用户编辑的集成测试中没有指定用户登录，更新编辑用户简介的集成测试：
+`test/integration/users_edit_test.rb`：
 ```
   test "unsuccessful edit" do
     # 添加以下要求登录的条件语句
@@ -373,20 +370,26 @@ end
     assert_redirected_to login_url
   end
 ```
-此时再去运行测试，已经可以通过。
+更新用户控制器测试，是因为测试目标前提过滤器`before filter`针对控制器动作哦而设置。这里测试场景设计如下：
+* 未登录用户访问用户简介编辑页面，确认闪信内容不为空，页面重定向到登录页
+* 未登录用户尝试更新用户简介，确认闪信内容不为空，页面重定向到登录页
 
-### 用户正确
+此时注释掉用户控制器中的前提过滤器，运行测试，确认可以检测出以上刚定义的两处错误场景。反注释掉前提过滤器，再去运行测试，依然可以通过。
 
-不仅是只有登录用户可以编辑简介，且只能编辑登录用户自己的简介，为了开发这部分功能，依据测试驱动开发的TDD操作流程，先要写出测试不同用户间不可互相编辑的测试场景，为此需要准备一个新的测试用户账户：
+### 需要正确的用户
+
+不仅是只有登录用户可以编辑简介，且只能编辑登录用户自己的简介。为了开发这部分功能，依据测试驱动开发的TDD操作流程，先要写出测试不同用户间不可互相编辑的测试场景，为此需要准备一个新的测试用户账户，更新测试用用户样本数据：
 `test/fixtures/users.yml`
 ```
+...
+# 这里添加除了michael以外的第二个用户
 archer:
   name: Sterling Archer
   email: duchess@example.gov
   password_digest: <%= User.digest('password') %>
 ```
 
-更新用户控制器测试定义文件，添加对新增测试用户的引用，以及非本人用户编辑和更新其他用户简介的场景：
+更新用户控制器测试定义文件，添加对新增测试用户的引用，以及非本人用户尝试编辑和更新其他用户简介的场景：
 ```
   def setup
     @user       = users(:michael)
@@ -415,7 +418,7 @@ archer:
 ```
 当然，当前的测试结果是失败的，因为相关的功能还没有实施。
 
-更新用户控制器文件，将尝试编辑他人简介的用户重定向到网站主页，这里创建一个`correct_user`动作。注意到新创建的`correct_user`动作中有用户变量`@user = User.find(params[:id])`的定义，且该动作通过`before_action`过滤器在头部做了引用，所以后面代码中`edit`和`update`动作里声明用户变量的重复语句可以省略。
+更新用户控制器文件，将尝试编辑他人简介的用户重定向到网站主页，
 `app/controllers/users_controller.rb`
 ```
 class UsersController < ApplicationController
@@ -424,12 +427,12 @@ class UsersController < ApplicationController
   before_action :correct_user,   only: [:edit, :update]
   ...
   def edit
-    # 因为correct_user有定义且在前面引用，这里就省略了用户变量的定义
+    # 因为correct_user在此动作前已经执行且定义了用户变量，这里就省略了
     # @user = User.find(params[:id])
   end
 
   def update
-    # 因为correct_user有定义且在前面引用，这里就省略了用户变量的定义
+    # 同上
     # @user = User.find(params[:id])
     if @user.update_attributes(user_params)
       flash[:success] = "Profile updated"
@@ -448,24 +451,23 @@ class UsersController < ApplicationController
     end
 end
 ```
+这里创建一个`correct_user`动作。注意到新创建的`correct_user`动作中有用户变量`@user = User.find(params[:id])`的定义，且该方法通过`before_action`过滤器在`edit`和`update`动作前已经执行，所以后面代码中`edit`和`update`动作里声明用户变量的声明可以省略。
+
 此时再次进行测试，可以确认所有测试项目通过。
 
 这里再追加一个帮助方法`current_user?(user)`，用来确认指定用户是否为当前登录用户:
 `app/helpers/sessions_helper.rb`
 ```
-  def remember(user)
-    ...
-  end
-  
+  ...
   # 如果指定用户是当前登录用户则返回真
   def current_user?(user)
     user == current_user
   end
 
   def current_user
-    ...
-  end
+  ...
 ```
+
 在用户控制器中使用该帮助方法，即用`current_user?(@user)`代替`@user == current_user`:
 `app/controllers/users_controller.rb`
 ```
@@ -478,12 +480,13 @@ end
 
 ## 友好跳转
 
-目前，如果未登录用户导航到某个用户A的简介编辑页面，网站会跳转到登录页，当该用户使用用户A的凭据登录后，网页会跳转到用户A的简介页面，而不是用户A的简介编辑页面面。比较理想和友好的跳转方式是到用户A的简介编辑页面，也就是网站使用者原本打算要打开的页面。
+目前，如果未登录用户试图访问任何未授权页面，网站会跳转到登录页。而当该用户登录后，网页会跳转到该用户的简介页面，却不是该用户之前想要访问的页面。更理想和友好的方式是在用户登录后跳转到之前他原本打算要打开的页面，如果有那样的页面。
 
-依然按照测试驱动开发TDD的流程，先写出理想场景下的逻辑测试代码：
+遵循测试驱动开发TDD的流程，先写出理想场景下的逻辑测试代码：
 `test/integration/users_edit_test.rb`
 ```
   test "successful edit with friendly forwarding" do
+    # 更新添加以下三条语句
     get edit_user_path(@user)
     log_in_as(@user)
     assert_redirected_to edit_user_url(@user)
@@ -500,9 +503,16 @@ end
     assert_equal email, @user.email
   end
 ```
-以上测试与之前的`successful edit`测试场景类似，只是在最开始的三行代码有所不同。主要是先尝试导航到用户简介编辑页，登录，再确认的确导航到了用户简介编辑页，之后的测试项目就是简介编辑场景。
+以上测试更新添加的三条语句模拟如下流程：
+1. 尝试导航到用户简介编辑页，实际不会成功。
+2. 之后成功登录，网站会导航到之前尝试打开的用户简介编辑页面。
+3. 最后确认的确导航到了用户简介编辑页。
 
-为了实现在登录后导航回登录前页面的功能，这里在会话帮助文件中定义两个方法`store_location`和`redirect_back_or`分别用于保存用户登录前的目标面和导航用户在登录后回到最初的目标页面：
+为了实现在登录后导航回登录前页面的功能，在会话帮助文件中定义两个方法：
+* `store_location`用于保存用户登录前所在的目标页面
+* `redirect_back_or`用于在登录后导航用户回到最初目标页面
+
+更新会话帮助文件：
 `app/helpers/sessions_helper.rb`:
 ```
   # Redirects to stored location (or to the default).
@@ -516,21 +526,24 @@ end
     session[:forwarding_url] = request.original_url if request.get?
   end
 ```
-注意，以上语句中保存URL地址使用的是`session[:var]`方法，而请求地址是从`request`对象的属性中提取，这里只限于对GET请求有效。这里的`if request.get?`确认在使用`GET`方法时才返回请求的地址，因为用户可以使用其他HTTP方法例如`POST`，`PATCH`或`DELETE`等方法在没有登录的情况下提交表单，例如手动删除了会话Cookie的时候（为什么会有这么变态的用户？）
+注意，以上语句中保存URL地址使用的是`session[:var]`方法，而请求地址是从`request`对象的属性中提取，这里只限于对GET请求有效。这里的`if request.get?`确认在使用`GET`方法时才返回请求的地址，因为用户可以使用其他HTTP方法例如`POST`，`PATCH`或`DELETE`等方法在没有登录的情况下提交表单，而这样的场景下使用默认GET方法返回原始请求页面会引发错误。
 
-为了使用上面创建的`store_location`方法，以便在提示用户登录前将用户请求的URL地址保存下来，更新用户控制器：
+另外，重定向登录用户的`redirect_back_or`方法在重定向后清除了`session[:forwarding_url]`变量值，这是为了防止以后的用户登录后，在没有前序访问页面之前，会被导航到前一个用户指定的重定向页面，而无法进入`default`页面。另外，虽然清除`session[:forwarding_url]`变量值的语句在页面跳转`redirect_to()`之后，但这并不妨碍前者的运行，因为在遇到`return`或者`end`语句之前跳转不会实际发生。
+
+更新用户控制器，在提示用户登录和跳转到登录页面之前保存用户想要访问的页面地址：
 `app/controllers/users_controller.rb`
 ```
     def logged_in_user
       unless logged_in?
-        # 这里只需要添加如下一条语句
+        # 只需要添加如下一条语句
         store_location
         flash[:danger] = "Please log in."
         redirect_to login_url
       end
     end
 ```
-使用之前创建的`redirect_back_or`方法重新导航登录用户到原始请求URL，更新会话控制器文件：
+
+更新会话控制器，在新的登录会话创建后跳转到用户登录之前想要访问的页面：
 `app/controllers/sessions_controller.rb`
 ```
   def create
@@ -546,12 +559,12 @@ end
     end
   end
 ```
-注意到重定向登录用户的`redirect_back_or`方法在用户登录的动作`create`之中，需要在`redirect_back_or`方法中定义每次完成重定向后清除`session[:forwarding_url]`变量值，否则以后所有用户登录后都会导航到曾经指定重定向的页面。另外，虽然`redirect_back_or`方法中清除`session[:forwarding_url]`变量值的命令在页面跳转的`redirect_to()`命令之后，但这并不妨碍前者的运行，在遇到`return`或者`end`命令之前跳转不会实际发生。
 
+测试，确认可以通过。
 
-### 拿走不谢
+### 追加测试
 
-作为原教程的练习部分，一些功能本身并不必要却可以使程序更健壮，以后用拿走不谢做下级标题并做整理。这里第一个内容是在测试中添加对`session[:forwarding_url]`变量值清理的确认，即用户登录和跳转到原始请求的页面后，保存有原始请求的变量应该是清理干净的，否则以后其他用户登录后都会被重定向到该页面，这里更新的是用户简介编辑测试文件：
+添加`session[:forwarding_url]`变量值的清理确认，即用户登录和跳转到原始的请求页面后，保存原始请求链接的变量应该是空的，否则以后其他用户登录后还会重定向到该页面。更新用户简介编辑测试：
 `test/integration/users_edit_test.rb`
 ```
   test "successful edit with friendly forwarding" do
@@ -560,31 +573,24 @@ end
     assert_redirected_to edit_user_url(@user)
     # 这里需要添加的测试语句仅此如下一行
     assert_equal session[:forwarding_url], nil
-    name  = "Foo Bar"
-    email = "foo@bar.com"
-    patch user_path(@user), params: { user: { name:  name,
-                                              email: email,
-                                              password:              "",
-                                              password_confirmation: "" } }
-    assert_not flash.empty?
-    assert_redirected_to @user
-    @user.reload
-    assert_equal name,  @user.name
-    assert_equal email, @user.email
+    ...
   end
 ```
-这里有一个遗留问题，是关于`debugger`的，也是由于移植环境到本地才发生，基本上就是需要先安装`readline`并重新安装`ruby`：
+
+如果你也有`debugger`的问题，而且错误提示有`readline`，可以尝试先后重新安装`readline`和`ruby`：
 ```
 $ brew install readline
 $ rvm list known
 $ rvm install 2.6.3
 $ gem install rails 
 ```
-基本上，安装了`readline`并重装了Ruby之后就可以用`debugger`了，只是在终端的输入自己不可见，但是可以运行。
+以上修复完成后，在`debugger`终端中的输入仍不可见，也就是不知道输入了什么，但只要输入正确可以得到期待的结果。
 
 ## 列印用户
 
-这部分创建用户主页，显示所有用户而不只是一个，从数据库中采样并分页显示，以适应可能有大量用户的情况，并为管理员准备一个界面用于删除用户。目前，所有网页访客都可以查看某个用户的简介，但显示所有用户的页面将只对注册用户开放，所以这里先要实施一个安全功能，依然按照测试驱动开发的TDD流程，先写出测试场景：
+这部分创建用户主页，也就是`index`动作，显示所有用户。从数据库中获取用户信息并分页显示，以应对用户数量较多的情况，为管理员准备删除用户的界面。
+
+设想的场景是，单个用户的简介页面对所有人开放，包括未登录用户，但显示所有用户的页面将只对注册用户开放，所以这里先要实施一个安全功能，依然按照测试驱动开发的TDD流程，先写出测试场景，更新用户控制器测试：
 `test/controllers/users_controller_test.rb`
 ```
   test "should redirect index when not logged in" do
@@ -599,13 +605,13 @@ $ gem install rails
   # 以下更新将index动作放入登录用户的过滤器中，非登录用户不得查看
   before_action :logged_in_user, only: [:index, :edit, :update]
   ...
-  # 目前获取的是全部用户，不适用生产环境，以后再做改进
+  # 目前获取全部用户，放入`@user`变量并传递给`index`视图
   def index
     @users = User.all
   end
 ```
 
-相关的视图文件需要手动创建，这里使用`each`方法遍历用户并为每个用户生成一个`li`对象：
+创建`index`视图，使用`each`方法遍历每个用户并生成一个`li`对象：
 `app/views/users/index.html.erb`
 ```
 <% provide(:title, 'All users') %>
@@ -619,6 +625,7 @@ $ gem install rails
   <% end %>
 </ul>
 ```
+
 以上用户列表中显示用户头像的自定义方法`gravatar_for`来自用户帮助方法：
 `app/helpers/users_helper.rb`
 ```
@@ -686,17 +693,21 @@ end
 测试，验证结果通过测试场景，并打开网页验证。
 
 
-### 生成用户
+### 用户样本
 
-目前的数据库中只有一个测试用户，本节开发需要更多，当然可以到注册界面手动生成，这里介绍使用程序自动生成用户的方法。首先更新`Gemfile`文件，添加`gem 'faker', '1.7.3'`到所有环境，真实场景下应该只用于开发环境：
+Rails允许使用程序自动生成大量样本用户，以满足开发和测试需要。
+
+更新`Gemfile`文件，添加`faker`到所有环境，至少开发环境：
 `Gemfile`
 ```
-gem 'faker',                   '1.7.3'
+gem 'faker', '1.7.3'
 ```
+
 运行`bundle install`安装更新的库:
 ```
 $ bundle install
 ```
+
 更新数据库种子文件：
 `db/seeds.rb`
 ```
@@ -715,26 +726,33 @@ User.create!(name:  "Example User",
                password_confirmation: password)
 end
 ```
-重制数据库并生成样例用户，如果重制数据库的操作失败，终止Rails服务器后再尝试：
+注意这里使用的`User.create!()`方法会在执行失败时产生一个异常，而不是返回`false`，以便调试和排错，并防止错误在悄无声息中发生。
+
+重置数据库并生成样例用户，如果重置数据库失败，终止Rails服务器后再尝试：
 ```
 $ rails db:migrate:reset
 $ rails db:seed
 ```
-现在可以运行Rails服务器，登录并到用户列表页面查看效果。所有用户显示在一个页面上，在用数量过多时会有加载时间过长和不便查看的问题，以下通过分页用户显示列表解决。
+
+现在可以运行Rails服务器，登录并到用户列表页面查看效果。所有用户显示在一个页面上，在用数量过多时会有加载时间过长和不便查看的问题，以下会通过分页用户显示列表解决。
 
 ### 分页用户
 
-Rails环境下实现分页功能的模块很多，这里使用一个较常见和健壮的`will_paginate`模块，首先更新库引用：
+用`will_paginate`实现用户列表分页，更新库引用：
 `Gemfile`
 ```
+# 添加如下两行代码
 gem 'will_paginate',           '3.1.6'
 gem 'bootstrap-will_paginate', '1.0.0'
 ```
-安装跟新追加的库：
+
+安装追加的库：
 ```
 $ bundle install
 ```
-之后需要重启Rails服务器，以确保所有库文件正确的重新加载。接着，更新用户的`index`视图，使用可以支持分页的对象代替`User.all`，这里首先添加`will_paginate`方法：
+
+重启Rails服务器，确保所有库正确加载。
+更新用户的`index`视图，添加`will_paginate`方法：
 `app/views/users/index.html.erb`
 ```
 <% provide(:title, 'All users') %>
@@ -752,34 +770,32 @@ $ bundle install
 # 添加如下一行语句
 <%= will_paginate %>
 ```
-这里的`will_paginate`方法了解自己是在`users`的视图中，会自动查找`@users`对象并且显示到其他页面的链接。目前这个视图还没有按照预期工作，因为用户控制器的主页动作中的变量`@users`中包含`User.all`，需要调用`paginate`方法为结果分页。例如，`User.paginate(page: 1)`默认从数据库中以每次30个的单位获取用户记录，如果`page`赋值则为`nil`则返回第一页。
+目前这个视图还没有按照预期工作，因为还需要更新用户控制器的`index`方法。
+
+测试调用`paginate`方法为结果分页：
 ```
 $ rails console
 > User.paginate(page:1)
-  User Load (1.0ms)  SELECT  "users".* FROM "users" LIMIT ? OFFSET ?  [["LIMIT", 11], ["OFFSET", 0]]
-   (0.1ms)  SELECT COUNT(*) FROM "users"
- => #<ActiveRecord::Relation [#<User id: 1, name: "Example User",
 > User.paginate(page:nil)
-  User Load (0.3ms)  SELECT  "users".* FROM "users" LIMIT ? OFFSET ?  [["LIMIT", 11], ["OFFSET", 0]]
-   (0.1ms)  SELECT COUNT(*) FROM "users"
- => #<ActiveRecord::Relation [#<User id: 1, name: "Example User",...
 ```
-使用该方法更新用户控制器中的`index`动作定义：
+
+更新用户控制器中的`index`动作：
 `app/controllers/users_controller.rb`
 ```
   def index
     @users = User.paginate(page: params[:page])
   end
 ```
-现在可以运行Rails服务器，登录并打开用户列表页面确认分页效果。
+具体分页的页面参数会由`will_paginate`方法从`index`视图拿到。
+
+运行Rails服务器，登录并打开用户列表页面，确认分页效果。
 
 ### 测试列印
 
-这里补充一个小测试，包括登录、访问用户列表、确认用户列表存在、确认用户分页栏存在，为了测试最后两项需要在测试数据库中准备超过三十个测试用用户账户。由于`fixture`文件支持嵌入式Ruby语言，除了特别指明增添的几个用户外，可以使用命令根据模版生成30个用户：
+为测试用户列印效果，更新测试数据源：
 `test/fixtures/users.yml`
 ```
 ...
-
 lana:
   name: Lana Kane
   email: hands@example.gov
@@ -797,10 +813,14 @@ user_<%= n %>:
   password_digest: <%= User.digest('password') %>
 <% end %>
 ```
-首先，生成测试文件：
+`fixture`支持嵌入式Ruby，除了手动添加几个用户，其他可以使用模版生成.
+
+
+生成测试文件：
 ```
 $ rails generate integration_test users_index
 ```
+
 更新测试文件：
 `test/integration/users_index_test.rb`
 ```
@@ -813,17 +833,22 @@ class UsersIndexTest < ActionDispatch::IntegrationTest
   end
 
   test "index including pagination" do
+    # 登录并导航到用户列表
     log_in_as(@user)
     get users_path
+    # 确认视图模版
     assert_template 'users/index'
+    # 确认页面中有两个分页功能组件
     assert_select 'div.pagination', count: 2
+    # 确认第一分页中每个用户记录的超链接中有用户名
     User.paginate(page: 1).each do |user|
       assert_select 'a[href=?]', user_path(user), text: user.name
     end
   end
 end
 ```
-以上测试确认存在`div`带有`pagination`类定义，确认第一页上有用户存在。运行测试，确认可以通过。这里也可以进行反向测试，将用户列表界面中的分页模块注释掉，再次测试确认无法通过。
+
+这里也可以进行反向测试，将用户列表界面中的分页模块注释掉，再次测试确认无法通过。
 ```
 # 注释前
 <%= will_paginate %>
@@ -831,8 +856,7 @@ end
 <%#= will_paginate %>
 ```
 
-### 继续优化
-
+### 局部优化
 
 使用Rails的功能优化用户列表视图，首先用`render`将用户列表中的`li`对象抽取出来：
 `app/views/users/index.html.erb`
@@ -844,7 +868,7 @@ end
 </ul>
 ```
 
-手动创建抽取出来的`user`模块：
+手动创建抽取出来的`user`代码片段：
 `app/views/users/_user.html.erb`
 ```
 <li>
@@ -853,7 +877,7 @@ end
 </li>
 ```
 
-最后，对用户列表视图中的代码进一步简化，让Rails自己遍历用户数组`@users`并应用抽取的`user`模块：
+进一步简化，让Rails自己遍历用户数组`@users`并应用抽取的`user`代码片段：
 `app/views/users/index.html.erb`
 ```
 <ul class="users">
@@ -865,12 +889,15 @@ end
 
 ## 删除用户
 
+目标是在管理员看到的用户列表中，为每个用户添加带删除操作的链接，该链接对普通用户不可见。
+
 ### 更新模型
 
-首先，更新用户模型，添加一个识别管理员的布尔型逻辑属性`admin`:
+更新用户模型，添加一个识别管理员的布尔型逻辑属性`admin`:
 ```
 $ rails generate migration add_admin_to_users admin:boolean
 ```
+
 对于以上数据库迁移操作的详情，可以在迁移定义中确认：
 `db/migrate/[timestamp]_add_admin_to_users.rb`
 ```
@@ -880,11 +907,14 @@ class AddAdminToUsers < ActiveRecord::Migration[5.1]
   end
 end
 ```
-这里，`:boolean`后面的`, default:false`是手动加入的，如此明确定义可以增强代码可读性，效果与默认的`nil`值相同。之后可以实施迁移，即数据库更新：
+这里，手动加入`default:false`是为增强代码可读性，效果与默认的`nil`值相同。
+
+实施迁移并更新数据库架构：
 ```
 $ rails db:migrate
 ```
-完成后，可以在Rails控制台中确认更新结果：
+
+在Rails控制台中确认更新结果：
 ```
 $ rails console
 2.5.1 :001 > user=User.first
@@ -895,7 +925,8 @@ $ rails console
 2.5.1 :004 > user.admin?
  => true 
 ```
-最后更新DB的种子文件，以便在重制数据库和重新生成数据时初始化一个管理员用户：
+
+更新DB的种子文件，初始化一个管理员用户：
 `db/seeds.rb`
 ```
 User.create!(name:  "Example User",
@@ -915,40 +946,49 @@ User.create!(name:  "Example User",
                password_confirmation: password)
 end
 ```
-重置数据库并根据以上更新中子定义生成用户账户：
+
+重置数据库，生成测试用户账户：
 ```
 $ rails db:migrate:reset
 $ rails db:seed
 ```
-作为安全方面的确认，之前在通过HTTP请求可以导入的用户属性方面，已经将`admin`属性排除，否则恶意用户可以用如下更新操作将某个普通用户提升为管理员：
+
+小心恶意用户可以用如下更新操作将普通用户提升为管理员：
 ```
 patch /users/17?admin=1
 ```
-可以再次查看用户管理器中对用户属性参数的限制确认以上安全考量：
+
+查看用户控制器中对用户属性参数的限制，确认无法通过HTTP请求更新用户的管理员属性：
 `app/controllers/users_controller.rb`
 ```
 def user_params
   params.require(:user).permit(:name, :email, :password, :password_confirmation)
 end
 ```
-更新用户控制器测试定义，添加对管理员属性编辑的不可用验证：
+
+更新用户控制器测试，添加对管理员属性编辑的不可用验证：
 `test/controllers/users_controller_test.rb`
 ```
   test "should not allow the admin attribute to be edited via the web" do
+    # 使用普通用户登录
     log_in_as(@other_user)
+    # 确认管理员属性为否
     assert_not @other_user.admin?
+    # 尝试通过HTTP的PATCH请求更新普通用户管理员属性为是
     patch user_path(@other_user), params: {
                                     user: { password:              "password",
                                             password_confirmation: "password",
                                             admin: true } }
+    # 确认管理员属性依然为否
     assert_not @other_user.admin?
   end
 ```
-运行测试，确认普通用户管理属性默认为否，尝试设置测试用户管理员属性为是，验证属性值仍为否。测试通过，好像没有问题，但是修改用户控制器对可修改属性的设定，添加`admin`属性到可修改属性列表，再次测试依然可以通过。即有意设置管理员属性可编辑后也没有能顺利编辑，这实际是一个问题，待解。
 
-### 添加动作
+测试，确认可以通过。
 
-更新用户列表中的单用户模块，为每个用户记录添加一个删除操作链接，只有管理员登录时可见：
+### 删除动作
+
+更新用户列表中的单用户代码块，为每个用户记录添加一个删除操作链接，只有管理员可见：
 `app/views/users/_user.html.erb`
 ```
 <li>
@@ -960,11 +1000,15 @@ end
   <% end %>
 </li>
 ```
-浏览区无法原生的发出DELETE请求，Rails使用JS模拟这个操作，因此如果用户的浏览器禁用了JS会导致该删除链接不可用。如果必须支持不允许JS的浏览器，妥协方案是使用表单发送POST请求模拟DELETE操作，这个话题最后单独详述。
+
+浏览器无法原生的发出DELETE请求，Rails使用JS模拟这个操作，因此如果用户的浏览器禁用了JS会导致该删除链接不可用。如果必须支持不允许JS的浏览器，妥协方案是使用表单发送POST请求模拟DELETE操作，这个话题参见备注。
 
 更新用户控制器，添加删除动作，将其加入只允许登录用户操作的动作列表：
 `app/controllers/users_controller.rb`
 ```
+...
+  before_action :logged_in_user, only: [:index, :edit, :update, :destroy]
+  ...
   def destroy
     User.find(params[:id]).destroy
     flash[:success] = "User deleted"
@@ -972,7 +1016,7 @@ end
   end
 ```
 
-虽然按照目前的设计，只有管理员可以看到删除操作链接，但恶意用户仍然可以通过命令行删除用户，因此这里对`destory`动作再多添加一层安全保证，确认只有管理员用户才能触发：
+对`destory`动作再多添加一层安全保证，确认只有管理员用户才能触发：
 `app/controllers/users_controller.rb`
 ```
 class UsersController < ApplicationController
@@ -1003,10 +1047,12 @@ michael:
   admin: true
 ...
 ```
-更新用户控制器测试文件，使用`delete`方法触发删除用户操作：
+
+更新用户控制器测试，验证非管理员用户删除失败的场景：
 `test/controllers/users_controller_test.rb`
 ```
   test "should redirect destroy when not logged in" do
+    #  未登录用户尝试删除用户，不成功，重定向到登录页面
     assert_no_difference 'User.count' do
       delete user_path(@user)
     end
@@ -1014,6 +1060,7 @@ michael:
   end
 
   test "should redirect destroy when logged in as a non-admin" do
+    # 登录用户，尝试删除用户，不成功，重定向到根页面
     log_in_as(@other_user)
     assert_no_difference 'User.count' do
       delete user_path(@user)
@@ -1021,9 +1068,8 @@ michael:
     assert_redirected_to root_url
   end
 ```
-以上测试用`assert_no_difference`确定在尝试删除时用户数量没有减少，即在用户未登录或登录用户非管理员的情况下删除操作没有成功。验证，非登录用户发起删除用户操作时会重定向到登录界面，登录的非管理员用户尝试删除操作时会被重定向到网站主页。
 
-以上测试对非授权用户的删除操作验证了失败，对授权的管理员用户也需要测试可以成功删除用户，由于是在用户列表页面进行，测试代码添加在用户列表的集成测试定义文件中：
+更新用户列印功能的集成测试，验证管理员可以删除用户的场景：
 `test/integration/users_index_test.rb`
 ```
 require 'test_helper'
@@ -1036,41 +1082,40 @@ class UsersIndexTest < ActionDispatch::IntegrationTest
   end
 
   test "index as admin including pagination and delete links" do
+    # 管理员登录，导航到用户列表，确认页面模版为index
     log_in_as(@admin)
     get users_path
     assert_template 'users/index'
+    # 确认有分页模块，第一分页中每个用户记录的超链接里有用户名
     assert_select 'div.pagination'
     first_page_of_users = User.paginate(page: 1)
     first_page_of_users.each do |user|
       assert_select 'a[href=?]', user_path(user), text: user.name
+      # 确认管理员可以看到删除链接
       unless user == @admin
         assert_select 'a[href=?]', user_path(user), text: 'delete'
       end
     end
+    # 执行一次删除用户操作，确认成功
     assert_difference 'User.count', -1 do
       delete user_path(@non_admin)
     end
   end
 
   test "index as non-admin" do
+    # 非管理员用户登录，导航到用户列表页面，确认没有删除链接
     log_in_as(@non_admin)
     get users_path
     assert_select 'a', text: 'delete', count: 0
   end
 end
 ```
-注意，以上测试会验证管理员用户下能够在每个用户记录中看到`delete`链接，在删除用户后用户数会减少一个，而非管理员用户在用户列表中不会看到任何`delete`字段。
 
-最后，运行测试，应该可以通过。这里记录一个问题，关于反向测试，也就是注释掉用户控制器中的如下过滤器语句：
-`app/controllers/users_controller.rb`
-```
-efore_action :admin_user,     only: :destroy
-```
-再次运行测试，应该不能通过，这样才表示该过滤器起了作用，但遗憾的是在我的环境中测试依然通过了，这里先不做排错但记录下这个问题，以后再解。
+运行测试，确认可以通过。
 
 ## 收尾
 
-抱歉这一章等了这么久才更新，之前在忙别的事情。这个教程还剩四个个部分，后面的两个章节分别关于激活新注册用户和重制用户账户密码。这里收尾本章节如下：
+收尾本章节如下：
 ```
 # GitHub part
 $ git add -A
@@ -1086,7 +1131,6 @@ $ heroku run rails db:migrate -a <your_heroku_appname>
 $ heroku run rails db:seed -a <your_heroku_appname>
 $ heroku restart -a <your_heroku_appname>
 ```
-因为迁移到本地，之前Heroku创建和建立的默认本地链代码库接丢失了，目前在每个命令后指定需要操作的Heroku代码库。
 
 ## 备注
 1. 关于为超链接添加`rel="noopener"`属性的必要性，可以参考如下文档：
@@ -1128,6 +1172,8 @@ michael:
 ```
 assert_select 'form[action="/signup"]'
 ```
+6. 不使用JS实现用户删除操作，参考如下文档：
+https://www.railstutorial.org/book/updating_and_deleting_users#cha-10_footnote-14
 
 ## 第十一章 激活用户
 
